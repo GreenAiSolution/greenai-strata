@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strata-retrieval"
+version = "0.1.0"
+description = "Hybrid retrieval — BM25 + dense vectors + HNSW + fusion + LLM re-ranking, with an evaluation harness that keeps it honest."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# Every provider is imported lazily; install only what you actually use.
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.30"]
+voyage = ["voyageai>=0.2"]
+local-neural = ["sentence-transformers>=3.0"]
+
+[project.scripts]
+strata = "strata.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["strata*"]

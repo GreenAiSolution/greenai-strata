@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+index/
+.strata/
+*.npz
+*.npy
+*.pkl
+.DS_Store
