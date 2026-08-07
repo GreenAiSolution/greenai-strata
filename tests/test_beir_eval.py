@@ -70,7 +70,7 @@ def test_benchmark_pool_excludes_unmatched_lexical_documents():
     lexical = np.array([4.0, 0.0, 0.0, 0.0], dtype=np.float32)
     semantic = np.array([0.1, 0.9, 0.2, 0.3], dtype=np.float32)
 
-    assert lexical_candidates(lexical, depth=4) == [0]
+    assert list(lexical_candidates(lexical, depth=4)) == [0]
     # The engine's top_k keeps the unmatched documents; their order among
     # themselves is whatever numpy's sort happens to produce, which is exactly
     # why letting them into a run was a lottery.
@@ -87,8 +87,8 @@ def test_benchmark_pool_excludes_unmatched_lexical_documents():
 
     # Where it bites is a shallow pool: with depth 1 the engine's lexical leg
     # would nominate an unmatched document, and the benchmark nominates none.
-    assert lexical_candidates(lexical, depth=1) == [0]
-    assert lexical_candidates(np.zeros(4, dtype=np.float32), depth=4) == []
+    assert list(lexical_candidates(lexical, depth=1)) == [0]
+    assert lexical_candidates(np.zeros(4, dtype=np.float32), depth=4).size == 0
 
 
 def test_fuse_dispatches_every_mode():
@@ -255,3 +255,97 @@ def test_truncation_drops_queries_left_without_relevant_documents(tmp_path):
     assert len(dataset) == 2
     assert set(dataset.qrels) == {"q0"}
     assert set(dataset.queries) == {"q0"}
+
+
+# --------------------------------------------------------------------------- #
+# Regression: a query that matches nothing must not crash the fusion
+# --------------------------------------------------------------------------- #
+
+def test_every_mode_survives_a_query_with_no_lexical_match():
+    """25 of NFCorpus's 323 queries match no document at all.
+
+    When the lexical filter leaves nothing, `np.union1d` on an empty *Python
+    list* returns a float64 array, and indexing with it raises IndexError. The
+    filter therefore has to return a dtype-pinned integer array so the empty
+    case is not a special case. This crashed `strata beir nfcorpus` in the
+    default mode set until it was caught.
+    """
+    lexical = np.zeros(500, dtype=np.float32)          # nothing matched
+    semantic = np.linspace(0, 1, 500).astype(np.float32)
+
+    assert lexical_candidates(lexical, 1000).size == 0
+    assert lexical_candidates(lexical, 1000).dtype == np.int64
+
+    assert _fuse("bm25", lexical, semantic, alpha=0.5, depth=1000) == []
+    for mode in ("vector", "rrf", "hybrid"):
+        ranked = _fuse(mode, lexical, semantic, alpha=0.5, depth=1000)
+        assert ranked, f"{mode} returned nothing"
+        assert all(isinstance(d, (int, np.integer)) for d, _ in ranked)
+
+
+def test_both_legs_empty_yields_no_results_rather_than_an_error():
+    lexical = np.zeros(10, dtype=np.float32)
+    semantic = np.zeros(0, dtype=np.float32)
+    assert _fuse("bm25", lexical, semantic, alpha=0.5, depth=10) == []
+
+
+def test_lexical_candidate_ids_index_correctly():
+    # The dtype pin matters at the point of use, not just at construction.
+    lexical = np.array([0.0, 2.0, 0.0, 5.0], dtype=np.float32)
+    candidates = lexical_candidates(lexical, 4)
+    assert list(lexical[candidates]) == [5.0, 2.0]
+
+
+# --------------------------------------------------------------------------- #
+# The ANN "not retrieved" sentinel must sort below real negative similarities
+# --------------------------------------------------------------------------- #
+
+def test_ann_miss_sentinel_sorts_below_genuine_negative_similarity():
+    """Cosine over signed LSA vectors is legitimately negative.
+
+    Filling un-retrieved documents with 0.0 makes a miss outrank every document
+    the graph correctly found and scored negatively — a ranking inversion, not
+    approximation error. The sentinel must be finite (so min-max normalisation
+    downstream does not go NaN) and below every returned score.
+    """
+    import numpy as np
+
+    from strata.corpus import Chunk, Corpus
+    from strata.pipeline import SearchEngine
+
+    rng = np.random.default_rng(0)
+    n = 300
+    vectors = rng.standard_normal((n, 16)).astype(np.float32)
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+
+    corpus = Corpus(chunks=[
+        Chunk(id=i, doc_id=f"d{i}", title=f"t{i}", text=f"document number {i} alpha",
+              start_line=1, n_tokens=4)
+        for i in range(n)
+    ])
+
+    class _Fixed:
+        name, dim = "fixed", 16
+
+        def embed_documents(self, texts):
+            return vectors
+
+        def embed_queries(self, texts):
+            return vectors[:1]
+
+    from strata.ann import HNSW
+    from strata.lexical import BM25Index
+
+    bm25 = BM25Index().fit([c.indexable() for c in corpus.chunks])
+    ann = HNSW(M=8, ef_construction=64).build(vectors)
+    engine = SearchEngine(corpus, _Fixed(), bm25, vectors, ann)
+
+    hits, _ = engine.search("alpha", k=10, mode="vector", candidates=20,
+                            use_ann=True)
+    scores = [h.vector for h in hits]
+
+    assert all(np.isfinite(s) for s in scores), "sentinel must stay finite"
+    # Nothing that the graph missed may outrank something it returned, so the
+    # returned top-10 must all be real similarities rather than sentinel fill.
+    assert scores == sorted(scores, reverse=True)
+    assert scores[0] == pytest.approx(1.0, abs=1e-5)   # the query is document 0

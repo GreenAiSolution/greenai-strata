@@ -140,8 +140,21 @@ class SearchEngine:
         query_vec = self.embedder.embed_queries([query])[0]
         want_ann = self.ann is not None if use_ann is None else (use_ann and self.ann)
         if want_ann:
-            semantic = np.zeros_like(lexical)
-            for doc_id, sim in self.ann.search(query_vec, k=candidates, ef=ef):
+            # Documents the graph did not return need a sentinel that sorts
+            # *below* everything it did. Zero is the wrong choice: cosine over
+            # signed LSA vectors is legitimately negative for roughly half a
+            # corpus, so a zero-filled miss outranks every genuinely dissimilar
+            # document the graph correctly found. That is a ranking inversion,
+            # not approximation error — on a 500-document sample it changed six
+            # of the hybrid top ten.
+            #
+            # The sentinel is finite rather than -inf on purpose: weighted
+            # fusion min-maxes the leg over the candidate pool, and a single
+            # -inf would make the whole normalised leg NaN.
+            found = self.ann.search(query_vec, k=candidates, ef=ef)
+            floor = min((sim for _, sim in found), default=0.0) - 1e-3
+            semantic = np.full_like(lexical, floor)
+            for doc_id, sim in found:
                 semantic[doc_id] = sim
         else:
             semantic = self.exact.scores(query_vec)

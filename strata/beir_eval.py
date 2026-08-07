@@ -148,7 +148,7 @@ def _dense_scores(legs: _Legs, query_vecs: np.ndarray, block: int = 64) -> np.nd
     return out
 
 
-def lexical_candidates(lexical: np.ndarray, depth: int) -> list[int]:
+def lexical_candidates(lexical: np.ndarray, depth: int) -> np.ndarray:
     """The documents the lexical leg actually retrieved, best first.
 
     A BM25 score of exactly zero means no query term occurs in the document.
@@ -165,8 +165,15 @@ def lexical_candidates(lexical: np.ndarray, depth: int) -> list[int]:
     Applied to *every* mode, not just the bm25 one: an unmatched document should
     not enter an RRF ranking or a hybrid candidate pool through the lexical leg
     either. It can still enter through the dense leg, which genuinely scored it.
+
+    Returns a pinned-integer array rather than a list. That is not cosmetic:
+    filtering can legitimately leave *nothing* — 25 of NFCorpus's 323 queries
+    match no document at all — and `np.union1d` on an empty Python list yields
+    a float64 array, which then raises `IndexError` when used to index. Pinning
+    the dtype makes the empty case behave like every other case.
     """
-    return [d for d in top_k(lexical, depth) if lexical[d] > 0.0]
+    matched = [d for d in top_k(lexical, depth) if lexical[d] > 0.0]
+    return np.asarray(matched, dtype=np.int64)
 
 
 def _fuse(mode: str, lexical: np.ndarray, semantic: np.ndarray, *,
@@ -177,12 +184,13 @@ def _fuse(mode: str, lexical: np.ndarray, semantic: np.ndarray, *,
     `Hit` construction afterwards is omitted.
     """
     if mode == "bm25":
-        return [(d, float(lexical[d])) for d in lexical_candidates(lexical, depth)]
+        return [(int(d), float(lexical[d]))
+                for d in lexical_candidates(lexical, depth)]
     if mode == "vector":
         return [(d, float(semantic[d])) for d in top_k(semantic, depth)]
     if mode == "rrf":
         fused = reciprocal_rank_fusion(
-            {"bm25": lexical_candidates(lexical, depth),
+            {"bm25": [int(d) for d in lexical_candidates(lexical, depth)],
              "vector": top_k(semantic, depth)},
             limit=depth,
         )
@@ -204,7 +212,8 @@ def _weighted(lexical: np.ndarray, semantic: np.ndarray, *,
     like. The arithmetic — min-max each leg over the pool, interpolate by alpha
     — is identical.
     """
-    pool = np.union1d(lexical_candidates(lexical, depth), top_k(semantic, depth))
+    pool = np.union1d(lexical_candidates(lexical, depth),
+                      np.asarray(top_k(semantic, depth), dtype=np.int64))
     if pool.size == 0:
         return []
     lex = lexical[pool]
@@ -350,6 +359,34 @@ def measure_ann(dataset: Dataset, *, embedder: Embedder | None = None,
     query_ids = sorted(dataset.qrels)[:n_queries]
     query_vecs = legs.query_vectors([dataset.queries[q] for q in query_ids])
 
+    # A query whose every term is out of the embedder's vocabulary projects to
+    # the zero vector, and `l2_normalise` hands that back as-is rather than
+    # failing. Every document then has cosine exactly 0.0, so the "true" nearest
+    # neighbours are an arbitrary tie-break over the whole corpus and so are the
+    # graph's — recall between two meaningless orderings is a coin flip that no
+    # amount of `ef` can improve.
+    #
+    # This is not hypothetical and it produced a wrong published claim. NFCorpus
+    # recall appeared to plateau at 0.865 regardless of search width, which was
+    # written up as an HNSW graph-connectivity defect. It was not: 27 of 200
+    # NFCorpus queries are single rare words ("okra", "fenugreek", "Zoloft")
+    # that the LSA vocabulary drops at min_df=2. 173/200 = 0.865 exactly. With
+    # the degenerate queries excluded the graph reaches recall 1.000 at ef=128.
+    # Measuring against a degenerate ground truth manufactures a defect.
+    norms = np.linalg.norm(query_vecs, axis=1)
+    usable = norms > 1e-6
+    n_degenerate = int((~usable).sum())
+    if n_degenerate and verbose:
+        print(f"  !! {n_degenerate}/{len(query_ids)} queries have no in-vocabulary "
+              f"terms and embed to the zero vector; excluded from recall, which "
+              f"would otherwise be an arbitrary tie-break")
+    query_vecs = query_vecs[usable]
+    if query_vecs.shape[0] == 0:
+        raise ValueError(
+            f"{dataset.name}: every sampled query embeds to zero — recall "
+            f"against this embedder is undefined"
+        )
+
     exact = ExactIndex(legs.vectors)
     t0 = time.perf_counter()
     truth = [{doc for doc, _ in exact.search(v, k=k)} for v in query_vecs]
@@ -363,7 +400,8 @@ def measure_ann(dataset: Dataset, *, embedder: Embedder | None = None,
 
     out: dict = {
         "n_docs": len(dataset),
-        "n_queries": len(query_ids),
+        "n_queries": int(usable.sum()),
+        "n_degenerate_queries_excluded": n_degenerate,
         "dim": int(legs.vectors.shape[1]),
         "build_seconds": round(build_seconds, 2),
         "exact_ms": round(exact_ms, 3),
