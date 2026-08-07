@@ -37,31 +37,30 @@ strata beir small --sweep-alpha
 ```
 
 The headline is the baseline, not the product. STRATA's hand-rolled BM25 —
-its own tokeniser, its own inverted index, no Lucene anywhere — reproduces
-published BM25 nDCG@10 to a **mean absolute deviation of 0.0120** across five
-datasets:
+its own tokeniser, its own inverted index, its own Porter stemmer, no Lucene
+anywhere — reproduces published BM25 nDCG@10 to a **mean absolute deviation of
+0.0066** across five datasets, none off by more than 0.0102:
 
 | dataset  | STRATA BM25 | published (Anserini, flat) |      Δ |
 |----------|------------:|---------------------------:|-------:|
-| nfcorpus |      0.3101 |                      0.322 | −0.0119 |
-| scifact  |      0.6613 |                      0.679 | −0.0177 |
-| arguana  |      0.4204 |                      0.397 | +0.0234 |
-| scidocs  |      0.1497 |                      0.149 | +0.0007 |
-| fiqa     |      0.2295 |                      0.236 | −0.0065 |
+| nfcorpus |      0.3187 |                      0.322 | −0.0033 |
+| scifact  |      0.6840 |                      0.679 | +0.0050 |
+| arguana  |      0.4064 |                      0.397 | +0.0094 |
+| scidocs  |      0.1539 |                      0.149 | +0.0049 |
+| fiqa     |      0.2462 |                      0.236 | +0.0102 |
+
+Getting there meant eliminating a hypothesis rather than guessing. It was not
+the BM25 parameters — matching Anserini's published k1=0.9/b=0.4 makes agreement
+*worse* (0.0239). It was the analyzer: Lucene stems and we did not, and adding
+Porter stemming halved the deviation (0.0128 → 0.0066).
 
 And the unflattering half, which is the more useful half: **the bundled LSA
 embedder does not earn its place on most of these datasets.** Hybrid fusion
 beats BM25 on 2 of 5, is statistically indistinguishable on 1, and loses on 2.
-On FiQA an oracle allowed to tune α on the test set would set it to 0.0 — switch
-the dense leg off entirely. Full numbers, significance tests and the analysis of
-*where* it fails are in [BEIR.md](BEIR.md).
-
-BEIR also settled the open question this README used to leave hanging — where
-the HNSW index starts beating brute force. Swept from 3.6k to 57.6k documents,
-the crossover lands **between 8,674 and 25,657 documents and only at ef=32**;
-at ef≥128 exact search wins at every size tested. And the build never amortises:
-FiQA's graph costs 714s to save 0.72 ms/query, which is ~990,000 queries to
-break even, for a 9.5% recall loss.
+On FiQA an oracle allowed to tune α on the test set switches the dense leg
+almost off. Full numbers, significance tests, the analysis of *where* it fails,
+and the three defects an adversarial audit found — including a wrong diagnosis
+this project had already published — are in [BEIR.md](BEIR.md).
 
 ---
 

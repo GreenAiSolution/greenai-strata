@@ -1,30 +1,31 @@
 [
   {
     "n_docs": 3633,
-    "n_queries": 200,
+    "n_queries": 173,
+    "n_degenerate_queries_excluded": 27,
     "dim": 256,
-    "build_seconds": 24.33,
-    "exact_ms": 0.067,
+    "build_seconds": 24.09,
+    "exact_ms": 0.065,
     "ef": {
       "32": {
-        "recall": 0.8515,
-        "ms": 0.537,
+        "recall": 0.9844,
+        "ms": 0.562,
         "speedup": 0.12
       },
       "64": {
-        "recall": 0.8625,
-        "ms": 0.93,
+        "recall": 0.9971,
+        "ms": 0.957,
         "speedup": 0.07
       },
       "128": {
-        "recall": 0.865,
-        "ms": 1.556,
+        "recall": 1.0,
+        "ms": 1.541,
         "speedup": 0.04
       },
       "256": {
-        "recall": 0.865,
-        "ms": 2.555,
-        "speedup": 0.03
+        "recall": 1.0,
+        "ms": 2.765,
+        "speedup": 0.02
       }
     },
     "dataset": "nfcorpus"
@@ -32,29 +33,30 @@
   {
     "n_docs": 5183,
     "n_queries": 200,
+    "n_degenerate_queries_excluded": 0,
     "dim": 256,
-    "build_seconds": 36.4,
-    "exact_ms": 0.097,
+    "build_seconds": 36.09,
+    "exact_ms": 0.091,
     "ef": {
       "32": {
         "recall": 0.9875,
-        "ms": 0.537,
-        "speedup": 0.18
+        "ms": 0.564,
+        "speedup": 0.16
       },
       "64": {
         "recall": 0.9985,
-        "ms": 0.88,
-        "speedup": 0.11
+        "ms": 1.001,
+        "speedup": 0.09
       },
       "128": {
         "recall": 0.9995,
-        "ms": 1.57,
-        "speedup": 0.06
+        "ms": 1.671,
+        "speedup": 0.05
       },
       "256": {
         "recall": 1.0,
-        "ms": 2.577,
-        "speedup": 0.04
+        "ms": 2.822,
+        "speedup": 0.03
       }
     },
     "dataset": "scifact"
@@ -62,29 +64,30 @@
   {
     "n_docs": 8674,
     "n_queries": 200,
+    "n_degenerate_queries_excluded": 0,
     "dim": 256,
-    "build_seconds": 64.29,
-    "exact_ms": 0.197,
+    "build_seconds": 65.49,
+    "exact_ms": 0.238,
     "ef": {
       "32": {
         "recall": 0.9995,
-        "ms": 0.498,
-        "speedup": 0.4
+        "ms": 0.49,
+        "speedup": 0.49
       },
       "64": {
         "recall": 1.0,
-        "ms": 0.925,
-        "speedup": 0.21
+        "ms": 0.902,
+        "speedup": 0.26
       },
       "128": {
         "recall": 1.0,
-        "ms": 1.707,
-        "speedup": 0.12
+        "ms": 1.69,
+        "speedup": 0.14
       },
       "256": {
         "recall": 1.0,
-        "ms": 3.043,
-        "speedup": 0.06
+        "ms": 2.952,
+        "speedup": 0.08
       }
     },
     "dataset": "arguana"
@@ -92,29 +95,30 @@
   {
     "n_docs": 25657,
     "n_queries": 200,
+    "n_degenerate_queries_excluded": 0,
     "dim": 256,
-    "build_seconds": 232.55,
-    "exact_ms": 0.793,
+    "build_seconds": 233.24,
+    "exact_ms": 0.829,
     "ef": {
       "32": {
         "recall": 0.9655,
-        "ms": 0.576,
-        "speedup": 1.37
+        "ms": 0.596,
+        "speedup": 1.39
       },
       "64": {
         "recall": 0.989,
-        "ms": 1.043,
-        "speedup": 0.76
+        "ms": 1.01,
+        "speedup": 0.82
       },
       "128": {
         "recall": 0.996,
-        "ms": 1.9,
-        "speedup": 0.42
+        "ms": 1.833,
+        "speedup": 0.45
       },
       "256": {
         "recall": 0.999,
-        "ms": 3.42,
-        "speedup": 0.23
+        "ms": 3.467,
+        "speedup": 0.24
       }
     },
     "dataset": "scidocs"
@@ -122,28 +126,29 @@
   {
     "n_docs": 57638,
     "n_queries": 200,
+    "n_degenerate_queries_excluded": 0,
     "dim": 256,
-    "build_seconds": 713.88,
-    "exact_ms": 1.569,
+    "build_seconds": 703.65,
+    "exact_ms": 1.557,
     "ef": {
       "32": {
         "recall": 0.905,
-        "ms": 0.848,
-        "speedup": 1.85
+        "ms": 0.94,
+        "speedup": 1.66
       },
       "64": {
         "recall": 0.9445,
-        "ms": 1.489,
-        "speedup": 1.05
+        "ms": 1.631,
+        "speedup": 0.95
       },
       "128": {
         "recall": 0.975,
-        "ms": 2.447,
-        "speedup": 0.64
+        "ms": 2.745,
+        "speedup": 0.57
       },
       "256": {
         "recall": 0.9935,
-        "ms": 4.403,
+        "ms": 4.356,
         "speedup": 0.36
       }
     },
