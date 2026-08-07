@@ -123,9 +123,14 @@ class _Legs:
 def _dense_scores(legs: _Legs, query_vecs: np.ndarray, block: int = 64) -> np.ndarray:
     """Cosine similarity of every query against every document.
 
-    Blocked over queries so peak memory stays at `block × n_docs` floats rather
-    than `n_queries × n_docs` — the difference between 150 MB and a swap storm
-    once the corpus passes a few hundred thousand documents.
+    Blocking bounds the *temporary* numpy allocates for each matmul, not the
+    result: the returned array is the full `n_queries × n_docs` and that is the
+    real memory bound. At the scale of the default suite that is fine — FiQA's
+    648 × 57,638 float32 matrix is 149 MB — but it is linear in both dimensions,
+    so a million-document corpus with a thousand queries would want 4 GB and
+    this function would need to become a generator feeding the query loop
+    directly. Recorded here because the limit is a property of the harness, not
+    of the engine, and it is the first thing that breaks on the large BEIR sets.
     """
     out = np.empty((query_vecs.shape[0], legs.vectors.shape[0]), dtype=np.float32)
     for start in range(0, query_vecs.shape[0], block):
