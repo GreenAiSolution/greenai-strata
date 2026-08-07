@@ -17,6 +17,15 @@ anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.30"]
 voyage = ["voyageai>=0.2"]
 local-neural = ["sentence-transformers>=3.0"]
+# `certifi` is only needed to download BEIR archives: the python.org macOS
+# builds ship without a usable root-certificate store, so a stock urlopen on
+# HTTPS fails there.
+beir = ["certifi>=2024.0"]
+# `pytrec_eval-terrier` is the binding around NIST's trec_eval. It is the
+# reference our own metrics are differentially tested against in
+# tests/test_metrics_vs_pytrec_eval.py, which skips when it is absent. It needs
+# a C++ toolchain, so it stays out of the default install.
+dev = ["pytest>=8.0", "certifi>=2024.0", "pytrec_eval-terrier>=0.5.6"]
 
 [project.scripts]
 strata = "strata.cli:main"

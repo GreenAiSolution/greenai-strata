@@ -6,3 +6,9 @@ index/
 *.npy
 *.pkl
 .DS_Store
+
+# Local virtualenv and build artefacts
+.venv/
+*.egg-info/
+
+# BEIR datasets are cached in ~/.cache/strata/beir, never in the repo

@@ -26,6 +26,38 @@ including the ones that are unflattering.
 
 ---
 
+## Externally comparable results: [BEIR.md](BEIR.md)
+
+Everything measured on your own corpus is unfalsifiable by a stranger. So STRATA
+also runs on [BEIR](https://arxiv.org/abs/2104.08663) — public corpora, public
+relevance judgements, metrics differentially tested against NIST's `trec_eval`.
+
+```bash
+strata beir small --sweep-alpha
+```
+
+The headline is the baseline, not the product. STRATA's hand-rolled BM25 —
+its own tokeniser, its own inverted index, no Lucene anywhere — reproduces
+published BM25 nDCG@10 to a **mean absolute deviation of 0.0120** across five
+datasets:
+
+| dataset  | STRATA BM25 | published (Anserini, flat) |      Δ |
+|----------|------------:|---------------------------:|-------:|
+| nfcorpus |      0.3101 |                      0.322 | −0.0119 |
+| scifact  |      0.6613 |                      0.679 | −0.0177 |
+| arguana  |      0.4204 |                      0.397 | +0.0234 |
+| scidocs  |      0.1497 |                      0.149 | +0.0007 |
+| fiqa     |      0.2295 |                      0.236 | −0.0065 |
+
+And the unflattering half, which is the more useful half: **the bundled LSA
+embedder does not earn its place on most of these datasets.** Hybrid fusion
+beats BM25 on 2 of 5, is statistically indistinguishable on 1, and loses on 2.
+On FiQA an oracle allowed to tune α on the test set would set it to 0.0 — switch
+the dense leg off entirely. Full numbers, significance tests and the analysis of
+*where* it fails are in [BEIR.md](BEIR.md).
+
+---
+
 ## Quickstart
 
 Python 3.11+ and numpy. Nothing else — no API key, no model download, no
@@ -49,7 +81,14 @@ python3 -m strata.cli --index ./index serve   # http://127.0.0.1:8105
 
 ```bash
 python3 tests/test_strata.py     # 33 assertions, ~6 seconds, no test framework
+
+pip install -e '.[dev]' && pytest tests/    # 98 tests including the BEIR harness
 ```
+
+The BEIR metrics are differentially tested against `pytrec_eval` — the binding
+around NIST's `trec_eval` that produced the published BEIR tables — so nDCG@10
+here means the same quantity it means in the papers. That test skips cleanly if
+`pytrec_eval` is not installed.
 
 ---
 
@@ -389,14 +428,26 @@ strata/
   rerank.py     LocalCrossEncoder (offline features) + ClaudeReranker (batched LLM judge)
   pipeline.py   SearchEngine: build → retrieve → fuse → re-rank, with a full trace
   evaluate.py   ICT query generation, chunk+document metrics, ablation, ANN recall, ceiling
+  metrics.py    nDCG / Recall / MAP / MRR to trec_eval semantics + paired bootstrap
+  beir.py       BEIR download, parse, and adaptation to Corpus (1 doc = 1 chunk)
+  beir_eval.py  BEIR runner: all modes over one index, significance, HNSW crossover
+  reference.py  published BM25 baselines, transcribed and cited per table
   server.py     stdlib web UI showing per-stage scores and an alpha slider
-  cli.py        index / search / eval / serve
+  cli.py        index / search / eval / beir / serve
+scripts/
+  ann_crossover.py  where HNSW starts beating brute force, swept over corpus size
 tests/
-  test_strata.py   33 assertions, no test framework required
+  test_strata.py                33 assertions, no test framework required
+  test_metrics.py               hand-worked metric fixtures
+  test_metrics_vs_pytrec_eval.py differential test against NIST trec_eval
+  test_beir_eval.py             adapter correctness + fusion-equivalence pin
+  test_reference.py             guards on the transcribed published baselines
 ```
 
-~2,100 lines. numpy is the only runtime dependency; every API-backed provider is
-imported lazily so the system runs fully offline by default.
+~3,400 lines. numpy is still the only runtime dependency; every API-backed
+provider is imported lazily so the system runs fully offline by default. The
+BEIR harness adds `certifi` (only to download the archives) and `pytest` plus
+`pytrec_eval-terrier` as dev extras.
 
 ---
 

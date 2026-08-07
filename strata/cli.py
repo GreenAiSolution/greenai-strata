@@ -159,6 +159,91 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_beir(args: argparse.Namespace) -> int:
+    """Score STRATA on public BEIR datasets — the externally comparable numbers."""
+    from . import beir
+    from .beir_eval import format_table, measure_ann, run_dataset
+    from .reference import PRIMARY, comparison_table, published, spread
+
+    names = list(args.datasets)
+    if names == ["small"]:
+        names = list(beir.SMALL_SUITE)
+    elif names == ["all"]:
+        names = sorted(beir.REGISTRY)
+
+    unknown = [n for n in names if n not in beir.REGISTRY]
+    if unknown:
+        raise SystemExit(f"unknown dataset(s): {', '.join(unknown)}\n"
+                         f"known: {', '.join(sorted(beir.REGISTRY))}")
+
+    reports = []
+    for name in names:
+        print(f"\n{BOLD}{name}{RESET}")
+        dataset = beir.load(name, split=args.split, max_docs=args.max_docs)
+        report = run_dataset(
+            dataset,
+            modes=tuple(args.modes),
+            embedder=_make_embedder(args.embedder),
+            alpha=args.alpha,
+            depth=args.depth,
+            sweep_alpha=args.sweep_alpha,
+        )
+        reports.append(report)
+
+        for mode in args.modes:
+            entry = report.modes[mode]
+            metrics = entry.result
+            line = (f"  {mode:<8} nDCG@10 {GREEN}{metrics.headline:.4f}{RESET}"
+                    f"   R@100 {metrics.recall.get(100, 0):.4f}"
+                    f"   MAP@10 {metrics.map.get(10, 0):.4f}"
+                    f"   MRR@10 {metrics.mrr.get(10, 0):.4f}"
+                    f"   {DIM}{entry.query_ms:.1f}ms/q{RESET}")
+            test = report.significance.get(mode)
+            if test:
+                verdict = "significant" if test["p_value"] < 0.05 else "not significant"
+                colour = GREEN if test["p_value"] < 0.05 else YELLOW
+                line += (f"  {DIM}vs bm25 {test['delta']:+.4f} "
+                         f"p={test['p_value']:.3f} {colour}{verdict}{RESET}")
+            print(line)
+
+        if report.alpha_sweep:
+            best = max(report.alpha_sweep.items(), key=lambda kv: kv[1])
+            print(f"  {DIM}alpha sweep (ORACLE — tuned on test, not a fair "
+                  f"result): best α={best[0]} → {best[1]:.4f}{RESET}")
+
+        if args.ann:
+            print(f"  {DIM}HNSW vs exact search on the same vectors{RESET}")
+            report.ann = measure_ann(dataset, embedder=_make_embedder(args.embedder))
+
+        reference = published(report.dataset)
+        if reference is not None and "bm25" in report.modes:
+            ours = report.modes["bm25"].result.headline
+            gap = ours - reference
+            disagreement = spread(report.dataset)
+            note = ""
+            if disagreement is not None and abs(gap) < disagreement:
+                note = (f" {DIM}(published BM25 values for this dataset span "
+                        f"{disagreement:.3f}){RESET}")
+            print(f"  {DIM}BM25 reproduction: ours {ours:.4f} vs published "
+                  f"{reference:.3f} ({PRIMARY}), Δ{gap:+.4f}{RESET}{note}")
+
+    print()
+    print(format_table(reports))
+
+    measured = {r.dataset: r.modes["bm25"].result.headline
+                for r in reports if "bm25" in r.modes}
+    if measured:
+        print()
+        print(comparison_table(measured))
+
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps([r.to_dict() for r in reports], indent=2))
+        print(f"\n{GREEN}wrote{RESET} {out}")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from .server import serve
 
@@ -217,6 +302,32 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-ann", action="store_true")
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("beir", help="score against public BEIR benchmarks")
+    p.add_argument("datasets", nargs="*", default=["scifact"],
+                   help="dataset names, or 'small' for the default suite, "
+                        "or 'all'")
+    p.add_argument("--split", default=None,
+                   help="override the dataset's default split")
+    p.add_argument("--modes", nargs="+", default=["bm25", "vector", "rrf", "hybrid"],
+                   choices=["bm25", "vector", "rrf", "hybrid"])
+    p.add_argument("--embedder", default="lsa",
+                   help="lsa | openai | voyage | st:<model-name>")
+    p.add_argument("--alpha", type=float, default=0.5,
+                   help="hybrid weight; left untuned on purpose")
+    p.add_argument("--depth", type=int, default=1000,
+                   help="results retrieved per query (BEIR convention: 1000)")
+    p.add_argument("--sweep-alpha", action="store_true",
+                   help="also report the best alpha per dataset — an ORACLE "
+                        "upper bound tuned on test, never a headline number")
+    p.add_argument("--max-docs", type=int, default=None,
+                   help="truncate the corpus for smoke tests; results stop "
+                        "being comparable to published numbers")
+    p.add_argument("--ann", action="store_true",
+                   help="also measure HNSW recall and latency against exact "
+                        "search at this corpus size")
+    p.add_argument("--out", default=None, help="write results JSON here")
+    p.set_defaults(func=cmd_beir)
 
     p = sub.add_parser("serve", help="browser UI showing per-stage scores")
     p.add_argument("--host", default="127.0.0.1")
