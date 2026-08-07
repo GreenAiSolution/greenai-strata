@@ -72,7 +72,9 @@ def test_every_score_is_a_plausible_ndcg():
 
 
 def test_every_source_is_cited():
-    assert set(CITATIONS) == set(BASELINES)
+    from strata.reference import DENSE_BASELINES
+
+    assert set(CITATIONS) == set(BASELINES) | set(DENSE_BASELINES)
     assert PRIMARY in BASELINES
     # STRATA concatenates title and body, so the flat variant is the honest
     # like-for-like reference rather than the more flattering multifield one.
@@ -90,11 +92,49 @@ def test_comparison_table_reports_the_gap_and_names_its_sources():
     assert "scifact" in rendered and "arguana" in rendered
     assert "+0.0234" in rendered or "-0.0177" in rendered   # deltas vs flat
     assert "mean |Δ| vs flat" in rendered
-    for citation in CITATIONS.values():
-        assert citation in rendered
+    # The BM25 comparison table cites the BM25 sources; the dense baseline is
+    # a separate registry and deliberately does not appear here.
+    for source in BASELINES:
+        assert CITATIONS[source] in rendered
 
 
 def test_comparison_table_handles_a_dataset_with_no_published_number():
     rendered = comparison_table({"scifact": 0.66, "made-up": 0.5})
     assert "made-up" in rendered
     assert "—" in rendered
+
+
+# --------------------------------------------------------------------------- #
+# Dense baselines
+# --------------------------------------------------------------------------- #
+
+def test_bge_values_match_the_official_model_card():
+    # Read from the machine-readable model-index at
+    # huggingface.co/BAAI/bge-base-en-v1.5. Percentages there, fractions here.
+    from strata.reference import BGE_BASE_EN_V15, published_dense
+
+    assert BGE_BASE_EN_V15["nfcorpus"] == 0.37389
+    assert BGE_BASE_EN_V15["scifact"] == 0.74039
+    assert BGE_BASE_EN_V15["arguana"] == 0.63605
+    assert BGE_BASE_EN_V15["scidocs"] == 0.21731
+    assert BGE_BASE_EN_V15["fiqa"] == 0.40646
+    assert published_dense("scifact") == 0.74039
+    assert published_dense("scifact", model="not-a-model") is None
+    assert published_dense("not-a-dataset") is None
+
+
+def test_dense_and_lexical_baselines_stay_in_separate_registries():
+    # Comparing a lexical run against a neural reference by accident is the
+    # most common way a retrieval table misleads. Keep them apart.
+    from strata.reference import BASELINES, DENSE_BASELINES
+
+    assert set(BASELINES) & set(DENSE_BASELINES) == set()
+    assert "bge-base-en-v1.5" not in BASELINES
+
+
+def test_dense_baselines_are_plausible_ndcg():
+    from strata.reference import DENSE_BASELINES
+
+    for model, table in DENSE_BASELINES.items():
+        for dataset, value in table.items():
+            assert 0.0 < value < 1.0, f"{model}/{dataset} = {value}"

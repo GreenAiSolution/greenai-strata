@@ -163,7 +163,8 @@ def cmd_beir(args: argparse.Namespace) -> int:
     """Score STRATA on public BEIR datasets — the externally comparable numbers."""
     from . import beir
     from .beir_eval import format_table, measure_ann, run_dataset
-    from .reference import PRIMARY, comparison_table, published, spread
+    from .reference import (DENSE_BASELINES, PRIMARY, comparison_table,
+                            dense_comparison_table, published, spread)
 
     names = list(args.datasets)
     if names == ["small"]:
@@ -238,6 +239,17 @@ def cmd_beir(args: argparse.Namespace) -> int:
     if measured:
         print()
         print(comparison_table(measured))
+
+    # When the dense leg is somebody else's published encoder rather than the
+    # bundled LSA floor, it has a published baseline of its own and driving it
+    # correctly is a separate, checkable claim.
+    model = args.embedder.split(":", 1)[1] if args.embedder.startswith("st:") else None
+    if model in DENSE_BASELINES:
+        dense = {r.dataset: r.modes["vector"].result.headline
+                 for r in reports if "vector" in r.modes}
+        if dense:
+            print()
+            print(dense_comparison_table(dense, model=model))
 
     if args.out:
         out = Path(args.out)

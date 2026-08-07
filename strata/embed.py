@@ -400,7 +400,12 @@ class SentenceTransformerEmbedder(_BatchedAPIEmbedder):
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
         self.model = SentenceTransformer(model)
-        self.dim = int(self.model.get_sentence_embedding_dimension())
+        # sentence-transformers 5.x renamed this; support both rather than
+        # pinning a version, since the provider is an optional extra and the
+        # user's installed version is not ours to choose.
+        dimension = getattr(self.model, "get_embedding_dimension", None) or \
+            self.model.get_sentence_embedding_dimension
+        self.dim = int(dimension())
         self.query_prefix = query_prefix
 
     def _encode(self, texts: Sequence[str], *, is_query: bool) -> np.ndarray:

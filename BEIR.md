@@ -109,49 +109,94 @@ so do we, verified in `tests/test_beir_eval.py`. Self-matching was not the cause
 
 ---
 
-## 2. Full results
+## 1b. And the dense leg reproduces too
 
-nDCG@10, five datasets, four retrieval modes, Lucene-matched analyzer, α = 0.5
-untuned.
+The same argument applies to the semantic half. Swapping `LSAEmbedder` for
+`bge-base-en-v1.5` is a one-line change, and BAAI publish that model's BEIR
+numbers in the machine-readable `model-index` on its official model card — so
+driving somebody else's encoder correctly is a second, independently checkable
+claim.
 
-| dataset  |   docs | queries |       bm25 | vector |    rrf |     hybrid |
-|----------|-------:|--------:|-----------:|-------:|-------:|-----------:|
-| nfcorpus |  3,633 |     323 |     0.3187 | 0.2835 | 0.3090 | **0.3348** |
-| scifact  |  5,183 |     300 | **0.6840** | 0.4829 | 0.5996 |     0.6675 |
-| arguana  |  8,674 |   1,406 |     0.4064 | 0.4572 | 0.4568 | **0.4708** |
-| scidocs  | 25,657 |   1,000 | **0.1539** | 0.0804 | 0.1201 |     0.1465 |
-| fiqa     | 57,638 |     648 | **0.2462** | 0.0558 | 0.1384 |     0.1977 |
+```bash
+strata beir small --stem --embedder st:BAAI/bge-base-en-v1.5
+```
 
-Every mode is tested against the BM25 baseline with a paired bootstrap over
-per-query nDCG@10 (10,000 resamples):
+| dataset  | STRATA | BAAI published |       Δ |
+|----------|-------:|---------------:|--------:|
+| nfcorpus | 0.3735 |        0.37389 | −0.0003 |
+| scifact  | 0.7404 |        0.74039 | +0.0000 |
+| arguana  | 0.6375 |        0.63605 | +0.0014 |
+| scidocs  | 0.2172 |        0.21731 | −0.0001 |
+| fiqa     | 0.4062 |        0.40646 | −0.0002 |
 
-| dataset  | hybrid − bm25 |     p | verdict |
-|----------|--------------:|------:|---------|
-| nfcorpus |       +0.0161 | 0.002 | hybrid genuinely better |
-| scifact  |       −0.0164 | 0.128 | **no significant difference** |
-| arguana  |       +0.0644 | 0.000 | hybrid genuinely better |
-| scidocs  |       −0.0074 | 0.010 | hybrid genuinely worse |
-| fiqa     |       −0.0485 | 0.000 | hybrid genuinely worse |
+**Mean absolute deviation: 0.0004.** SciFact agrees to four decimal places.
+
+Two independent reproductions — a lexical baseline to 0.0066 and a neural one to
+0.0004, against references from different authors using different toolkits — is
+much stronger evidence that the loader, the qrels handling, the ranking and the
+metric are all correct than either would be alone. A pipeline with a bug in the
+shared parts could not hit both.
 
 ---
 
-## 3. What this says about the local embedder — the unflattering part
+## 2. Full results
 
-The headline finding is negative, and it is the most useful thing here.
+nDCG@10, five datasets, four retrieval modes, Lucene-matched analyzer, α = 0.5
+untuned. **With `bge-base-en-v1.5` as the dense leg:**
 
-**The bundled LSA embedder does not earn its place on most of these datasets.**
-Hybrid fusion beats BM25 on two of five, is statistically indistinguishable on
-one, and loses on two. On FiQA the dense leg scores 0.0558 against BM25's
-0.2462 and drags the hybrid down by almost five points. The alpha sweep says the
-same thing from the other side: on FiQA an oracle allowed to cheat and tune α on
-the test labels picks α = 0.2, and on the unstemmed index it picks **0.0** —
+| dataset  |   docs | queries |   bm25 |     vector |        rrf | hybrid | hybrid − bm25 |
+|----------|-------:|--------:|-------:|-----------:|-----------:|-------:|--------------:|
+| nfcorpus |  3,633 |     323 | 0.3187 |     0.3735 | **0.3741** | 0.3728 | +0.0541 (p .000) |
+| scifact  |  5,183 |     300 | 0.6840 |     0.7404 | **0.7408** | 0.7401 | +0.0561 (p .000) |
+| arguana  |  8,674 |   1,406 | 0.4064 | **0.6375** |     0.5542 | 0.6156 | +0.2092 (p .000) |
+| scidocs  | 25,657 |   1,000 | 0.1539 | **0.2172** |     0.1988 | 0.1920 | +0.0381 (p .000) |
+| fiqa     | 57,638 |     648 | 0.2462 | **0.4062** |     0.3637 | 0.3568 | +0.1106 (p .000) |
+
+**With the bundled LSA embedder — the offline, dependency-free floor:**
+
+| dataset  |   bm25 | vector |    rrf |     hybrid | hybrid − bm25 |
+|----------|-------:|-------:|-------:|-----------:|--------------:|
+| nfcorpus | 0.3187 | 0.2835 | 0.3090 | **0.3348** | +0.0161 (p .002) |
+| scifact  | **0.6840** | 0.4829 | 0.5996 | 0.6675 | −0.0164 (n.s., p .128) |
+| arguana  | 0.4064 | 0.4572 | 0.4568 | **0.4708** | +0.0644 (p .000) |
+| scidocs  | **0.1539** | 0.0804 | 0.1201 | 0.1465 | −0.0074 (p .010) |
+| fiqa     | **0.2462** | 0.0558 | 0.1384 | 0.1977 | −0.0485 (p .000) |
+
+Every difference is tested against the BM25 baseline with a paired bootstrap
+over per-query nDCG@10 (10,000 resamples).
+
+---
+
+## 3. What the two embedders say
+
+**The architecture is validated, and the thing it depended on was the encoder.**
+With `bge-base-en-v1.5` in the dense leg, combining the two legs beats BM25 on
+**all five datasets, every one at p ≤ 0.001**, by between +0.04 and +0.21
+nDCG@10. That is the claim this project could not make an hour ago and can now.
+
+**But the shipped α = 0.5 is wrong for a strong encoder, and the sweep says so
+loudly.** The oracle α is 0.8 on four datasets and 0.9 on the fifth — the dense
+leg deserves most of the weight, and at α = 0.5 the fixed hybrid is *never* the
+best mode. Pure dense wins on three datasets and RRF on two. RRF is the
+interesting one: it needs no α at all, and it is within 0.001 of the best mode
+on nfcorpus and scifact while being far more robust than a guessed weight. On
+the evidence here **RRF is the better default than weighted fusion at α = 0.5**,
+and that is a change worth making to the product rather than to the write-up.
+
+Note what did *not* happen: I did not quietly adopt the oracle α. It is tuned on
+test labels and stays labelled as such. The defensible move is switching the
+default to a parameter-free fusion, not to a number read off the answer sheet.
+
+**The bundled LSA embedder, by contrast, does not earn its place.** On the same
+five datasets it wins on two, ties on one, and loses on two. On FiQA it scores
+0.0558 against BM25's 0.2462 and drags the hybrid down five points; an oracle
+allowed to cheat picks α = 0.2, and on the unstemmed index it picks **0.0** —
 switch the dense leg off entirely.
 
-This is not a surprise, and the [embedder's own docstring](strata/embed.py) says
+That is not a surprise, and the [embedder's own docstring](strata/embed.py) says
 so up front — TF-IDF plus a truncated SVD is "the honest floor", not a neural
 encoder. But there is a difference between predicting that in a comment and
-measuring it on five public datasets, and the measurement is more specific than
-the prediction was:
+measuring it, and the measurement is more specific than the prediction was:
 
 - **It loses badly where the vocabulary gap is the whole task.** FiQA is
   financial questions asked in plain language against expert answers; SciDocs is
@@ -168,11 +213,18 @@ the prediction was:
   argument for the re-ranking layer this repo already has rather than against
   the dense leg entirely.
 
-The honest one-line summary: **on this benchmark STRATA is a faithful BM25
-implementation with a hybrid layer that helps on two of five datasets and hurts
-on two.** Swapping `LSAEmbedder` for a neural encoder is a one-line change and
-the harness will say exactly what it bought. Until that is run I am not claiming
-the hybrid architecture is validated.
+The honest one-line summary: **the hybrid architecture works, and the bundled
+offline embedder is the thing that was holding it back.** The engine drives a
+real encoder to its published numbers and fusion then beats BM25 everywhere;
+with the dependency-free floor it does not. Both configurations are reported
+above rather than only the flattering one, because "works with a 440 MB model
+download and a GPU" and "works with numpy alone" are different products and a
+reader is entitled to know which number belongs to which.
+
+The cost of that upgrade is not nothing: encoding FiQA's 57,638 documents took
+582s on an M1 Max GPU against 35s for LSA on the CPU, plus torch and a model
+download. The floor exists for a reason; it is just not the configuration to
+quote a quality number from.
 
 ---
 

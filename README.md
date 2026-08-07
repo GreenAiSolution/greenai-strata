@@ -54,13 +54,25 @@ the BM25 parameters — matching Anserini's published k1=0.9/b=0.4 makes agreeme
 *worse* (0.0239). It was the analyzer: Lucene stems and we did not, and adding
 Porter stemming halved the deviation (0.0128 → 0.0066).
 
-And the unflattering half, which is the more useful half: **the bundled LSA
-embedder does not earn its place on most of these datasets.** Hybrid fusion
-beats BM25 on 2 of 5, is statistically indistinguishable on 1, and loses on 2.
-On FiQA an oracle allowed to tune α on the test set switches the dense leg
-almost off. Full numbers, significance tests, the analysis of *where* it fails,
-and the three defects an adversarial audit found — including a wrong diagnosis
-this project had already published — are in [BEIR.md](BEIR.md).
+**The dense leg reproduces too.** Swap in `bge-base-en-v1.5` and STRATA lands
+within **0.0004** of BAAI's own published numbers for that model (SciFact agrees
+to four decimal places). Two independent reproductions — a lexical baseline from
+one set of authors, a neural one from another, different toolkits — is much
+stronger evidence the shared pipeline is correct than either alone.
+
+With a real encoder in place, **fusion beats BM25 on all five datasets, every
+one at p ≤ 0.001.** With the bundled offline LSA floor it wins on only two of
+five. The architecture works; the dependency-free embedder was what held it
+back, and both configurations are reported rather than only the flattering one.
+
+One finding worth acting on: at the shipped α = 0.5 the weighted hybrid is
+*never* the best mode once the encoder is good — the oracle α is 0.8–0.9
+everywhere, and parameter-free RRF gets within 0.001 of the best mode without
+tuning anything.
+
+Full numbers, significance tests, and the three defects an adversarial audit
+found — including a wrong diagnosis this project had already published — are in
+[BEIR.md](BEIR.md).
 
 ---
 
