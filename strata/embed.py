@@ -43,42 +43,138 @@ def l2_normalise(matrix: np.ndarray) -> np.ndarray:
 # Sparse helpers — a minimal CSR so we never pull in scipy.
 # --------------------------------------------------------------------------- #
 
+class _RankMajorPlan:
+    """A reduction schedule for `sum of w[p] * dense[g[p]]` over each segment.
+
+    Both products the SVD needs are segment sums over the postings: `A @ dense`
+    sums each *row's* postings, `A.T @ dense` sums each *column's*. The obvious
+    implementations are both bad. `np.add.reduceat` has to materialise the whole
+    `(nnz, k)` product first — 4.5 GB on fiqa — and then runs an order of
+    magnitude below memory bandwidth because the segments are short. A
+    `np.bincount` per output column avoids the temporary but makes one full pass
+    over every posting per column, so 268 passes.
+
+    The trick here is to reorder the work *rank-major* instead of segment-major.
+    Sort the segments by descending length; then "the segments that own a t-th
+    posting" is exactly a prefix of that order, and its length `m[t]` is a
+    non-increasing staircase. So the whole product is
+
+        for t in range(longest_segment):
+            acc[:m[t]] += dense[gather[t]] * weight[t][:, None]
+
+    Every posting is touched exactly once, each step is a contiguous vectorised
+    fused gather-multiply-add into a live accumulator, and there is no `(nnz, k)`
+    temporary at all — the largest array is the `(segments, k)` accumulator.
+
+    Summation order is preserved: within a segment the postings are still added
+    in ascending posting order, one rank at a time. Together with the float64
+    accumulator — which is what `np.bincount` used — that makes `rdot` bit-for-bit
+    identical to the per-column bincount it replaces. `dot` agrees with the old
+    reduceat to float32 rounding rather than exactly, because reduceat summed in
+    float32 with its own internal unrolling; where they differ this one is the
+    more accurate.
+
+    The permutation is built once per matrix and reused across all five power
+    iterations, which is what makes the up-front sort pay for itself.
+    """
+
+    __slots__ = ("order", "offsets", "gather", "weights", "n_out", "width")
+
+    def __init__(self, indptr, gather_index, weights, n_out: int):
+        counts = np.diff(indptr).astype(np.int64)
+        self.n_out = n_out
+        # Descending length. Stable so equal-length segments keep their order —
+        # not required for correctness, only for reproducible plans.
+        self.order = np.argsort(-counts, kind="stable")
+        self.width = int(counts.max()) if counts.size else 0
+        if self.width == 0:
+            self.offsets = np.zeros(1, dtype=np.int64)
+            self.gather = gather_index[:0]
+            self.weights = weights[:0]
+            return
+
+        # m[t] = number of segments holding at least t + 1 postings, i.e. the
+        # length of the active prefix at rank t. A reversed cumulative histogram
+        # of the segment lengths gives the whole staircase in one pass.
+        histogram = np.bincount(counts, minlength=self.width + 1)
+        m = np.cumsum(histogram[::-1])[::-1][1 : self.width + 1]
+        self.offsets = np.zeros(self.width + 1, dtype=np.int64)
+        np.cumsum(m, out=self.offsets[1:])
+
+        permutation = np.empty(int(self.offsets[-1]), dtype=np.int64)
+        base = indptr[self.order]
+        for t in range(self.width):
+            permutation[self.offsets[t] : self.offsets[t + 1]] = base[: m[t]] + t
+        self.gather = gather_index[permutation]
+        self.weights = weights[permutation]
+
+    def apply(self, dense: np.ndarray) -> np.ndarray:
+        accumulator = np.zeros((self.n_out, dense.shape[1]), dtype=np.float64)
+        gather, weights = self.gather, self.weights
+        # .tolist() once: numpy scalars in a loop this hot cost more than the
+        # slicing they index.
+        offsets = self.offsets.tolist()
+        for t in range(self.width):
+            start, stop = offsets[t], offsets[t + 1]
+            accumulator[: stop - start] += (
+                dense[gather[start:stop]] * weights[start:stop, None]
+            )
+        out = np.empty((self.n_out, dense.shape[1]), dtype=np.float32)
+        out[self.order] = accumulator          # undo the length sort
+        return out
+
+
 class _CSR:
-    __slots__ = ("indptr", "indices", "data", "shape", "_rows")
+    __slots__ = ("indptr", "indices", "_data", "shape", "_rows",
+                 "_row_plan", "_column_plan")
 
     def __init__(self, indptr, indices, data, shape):
         self.indptr = indptr
         self.indices = indices
-        self.data = data
         self.shape = shape
         self._rows = np.repeat(
             np.arange(shape[0], dtype=np.int32), np.diff(indptr)
         )
+        self._data = data
+        self._row_plan: _RankMajorPlan | None = None
+        self._column_plan: _RankMajorPlan | None = None
+
+    @property
+    def data(self) -> np.ndarray:
+        return self._data
+
+    @data.setter
+    def data(self, value: np.ndarray) -> None:
+        # The plans bake the posting weights in, so reweighting the matrix (row
+        # normalisation does exactly that) has to drop them.
+        self._data = value
+        self._row_plan = None
+        self._column_plan = None
 
     def dot(self, dense: np.ndarray) -> np.ndarray:
-        """A @ dense — segment-sum over postings via reduceat."""
-        out = np.zeros((self.shape[0], dense.shape[1]), dtype=np.float32)
-        if self.data.size == 0:
-            return out
-        prod = dense[self.indices] * self.data[:, None]
-        counts = np.diff(self.indptr)
-        nonempty = np.nonzero(counts > 0)[0]
-        # Empty rows share an indptr value with the next non-empty row, so the
-        # reduceat segment boundaries line up without any special-casing.
-        out[nonempty] = np.add.reduceat(prod, self.indptr[nonempty], axis=0)
-        return out
+        """A @ dense — sum each row's postings."""
+        if self._row_plan is None:
+            self._row_plan = _RankMajorPlan(
+                self.indptr, self.indices, self._data, self.shape[0]
+            )
+        return self._row_plan.apply(dense)
 
     def rdot(self, dense: np.ndarray) -> np.ndarray:
-        """A.T @ dense — scatter-add over postings, one bincount per column."""
-        out = np.zeros((self.shape[1], dense.shape[1]), dtype=np.float32)
-        gathered = dense[self._rows]
-        for j in range(dense.shape[1]):
-            out[:, j] = np.bincount(
-                self.indices,
-                weights=self.data * gathered[:, j],
-                minlength=self.shape[1],
+        """A.T @ dense — sum each column's postings."""
+        if self._column_plan is None:
+            # Transpose to CSC once. A stable sort on the column ids leaves each
+            # column's postings in ascending row order, which is the order the
+            # old per-column bincount accumulated them in.
+            order = np.argsort(self.indices, kind="stable")
+            indptr = np.zeros(self.shape[1] + 1, dtype=np.int64)
+            np.cumsum(
+                np.bincount(self.indices, minlength=self.shape[1]),
+                out=indptr[1:],
             )
-        return out
+            self._column_plan = _RankMajorPlan(
+                indptr, self._rows[order], self._data[order], self.shape[1]
+            )
+        return self._column_plan.apply(dense)
 
 
 def _randomised_svd(matrix: _CSR, rank: int, *, n_iter: int = 4, oversample: int = 12,
