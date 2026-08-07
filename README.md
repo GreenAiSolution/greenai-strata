@@ -56,6 +56,13 @@ On FiQA an oracle allowed to tune α on the test set would set it to 0.0 — swi
 the dense leg off entirely. Full numbers, significance tests and the analysis of
 *where* it fails are in [BEIR.md](BEIR.md).
 
+BEIR also settled the open question this README used to leave hanging — where
+the HNSW index starts beating brute force. Swept from 3.6k to 57.6k documents,
+the crossover lands **between 8,674 and 25,657 documents and only at ef=32**;
+at ef≥128 exact search wins at every size tested. And the build never amortises:
+FiQA's graph costs 714s to save 0.72 ms/query, which is ~990,000 queries to
+break even, for a 9.5% recall loss.
+
 ---
 
 ## Quickstart

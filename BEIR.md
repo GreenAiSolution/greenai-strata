@@ -204,7 +204,60 @@ the first thing to optimise if these corpora get larger.
 
 ---
 
-## 6. Limitations
+## 6. Where HNSW starts beating brute force
+
+The README reports an unflattering result: on a 1,323-chunk corpus the
+hand-rolled HNSW index was *slower* than exact search. That is correct at that
+size, but one corpus is one point on the x-axis and cannot say where the curves
+cross. BEIR provides the rest of the axis.
+
+```bash
+python scripts/ann_crossover.py
+```
+
+Recall@10 is measured against `ExactIndex` on the same vectors and the same
+queries, so it isolates what the approximation lost. Speedup is exact-search
+latency divided by HNSW latency; above 1.00× the graph is winning.
+
+| dataset  |   docs | build | exact ms | ef=32 recall / speedup | ef=256 recall / speedup |
+|----------|-------:|------:|---------:|-----------------------:|------------------------:|
+| nfcorpus |  3,633 |  24s |    0.067 |     0.852 / **0.12×** |          0.865 / 0.03× |
+| scifact  |  5,183 |  36s |    0.097 |     0.988 / **0.18×** |          1.000 / 0.04× |
+| arguana  |  8,674 |  64s |    0.197 |     1.000 / **0.40×** |          1.000 / 0.06× |
+| scidocs  | 25,657 | 233s |    0.793 |     0.966 / **1.37×** |          0.999 / 0.23× |
+| fiqa     | 57,638 | 714s |    1.569 |     0.905 / **1.85×** |          0.994 / 0.36× |
+
+**The crossover sits between 8,674 and 25,657 documents, and only at ef=32.**
+At ef=64 the graph roughly breaks even on the largest corpus; at ef≥128 exact
+search wins everywhere, including at 57,638 documents. The reason is not
+mysterious: exact search is one contiguous `(n × 256) @ (256,)` matmul that
+numpy hands to BLAS, while HNSW traversal is per-node Python with heap
+operations, so the graph has to eliminate a very large fraction of the corpus
+before it can pay for its own interpreter overhead.
+
+**And the crossover is the wrong question anyway, because the build never
+amortises.** Building the FiQA graph costs 714 seconds to save 0.72 ms per
+query at ef=32 — that is **990,000 queries to break even**, and you pay 9.5% of
+your recall for it. SciDocs works out at almost exactly the same figure. On a
+corpus of this size, on this stack, the honest recommendation is
+`use_ann=False`; the graph earns its place only when the corpus is large enough
+that exact search stops fitting the latency budget at all, which is well past
+where these datasets end.
+
+One anomaly worth flagging rather than smoothing over: NFCorpus recall
+**plateaus at 0.865 and will not improve with search width** — ef=256 buys
+0.013 over ef=32, where every other dataset reaches ≥0.99. Widening the beam
+cannot fix it, which points at build-time graph connectivity (nodes that are
+unreachable from the entry point) rather than at the search. NFCorpus documents
+are short medical abstracts with heavy vocabulary overlap, so the LSA vectors
+are unusually clustered and the neighbour-selection heuristic may be pruning the
+long-range links that keep the graph navigable. That is a real defect in the
+index, it is visible only because recall is measured against exact search, and
+it is unfixed.
+
+---
+
+## 7. Limitations
 
 - **Five datasets, not eighteen.** The suite covers 3.6k–57.6k documents. The
   million-document BEIR datasets (HotpotQA, FEVER, MS MARCO, Climate-FEVER,
