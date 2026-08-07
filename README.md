@@ -100,7 +100,7 @@ python3 -m strata.cli --index ./index serve   # http://127.0.0.1:8105
 ```bash
 python3 tests/test_strata.py     # 33 assertions, ~6 seconds, no test framework
 
-pip install -e '.[dev]' && pytest tests/    # 98 tests including the BEIR harness
+pip install -e '.[dev]' && pytest tests/    # 205 tests including the BEIR harness
 ```
 
 The BEIR metrics are differentially tested against `pytrec_eval` — the binding
