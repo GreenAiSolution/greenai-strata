@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .stem import stem_cached
 from .text import tokenize
 
 
@@ -21,9 +22,14 @@ class BM25Index:
     slices rather than a Python dict walk.
     """
 
-    def __init__(self, k1: float = 1.5, b: float = 0.75):
+    def __init__(self, k1: float = 1.5, b: float = 0.75, stem: bool = False):
         self.k1 = k1
         self.b = b
+        #: Porter-stem every term at index and query time, the way Lucene's
+        #: EnglishAnalyzer does. Off by default: enabling it changes the
+        #: postings and every IDF, so it must never turn on silently under
+        #: numbers that were published without it. See strata/stem.py.
+        self.stem = stem
         self.vocab: dict[str, int] = {}
         self.idf = np.zeros(0, dtype=np.float32)
         self.post_doc = np.zeros(0, dtype=np.int32)   # doc id per posting
@@ -33,6 +39,17 @@ class BM25Index:
         self.avgdl = 0.0
         self.n_docs = 0
 
+    def _terms(self, text: str) -> list[str]:
+        """Tokenise, and stem if this index was built with stemming on.
+
+        Index and query must go through the same function or the two vocabularies
+        drift apart and queries silently stop matching — the classic analyzer
+        mismatch bug, which looks like "retrieval is just bad" rather than like
+        a bug.
+        """
+        tokens = tokenize(text)
+        return [stem_cached(t) for t in tokens] if self.stem else tokens
+
     # ------------------------------------------------------------------ build
     def fit(self, documents: list[str]) -> "BM25Index":
         self.n_docs = len(documents)
@@ -41,7 +58,7 @@ class BM25Index:
 
         for doc_id, doc in enumerate(documents):
             counts: dict[str, int] = {}
-            tokens = tokenize(doc)
+            tokens = self._terms(doc)
             for token in tokens:
                 counts[token] = counts.get(token, 0) + 1
             doc_len[doc_id] = len(tokens)
@@ -84,7 +101,7 @@ class BM25Index:
         norm = self.k1 * (1.0 - self.b + self.b * self.doc_len / max(self.avgdl, 1e-9))
 
         seen: set[int] = set()
-        for token in tokenize(query):
+        for token in self._terms(query):
             term_id = self.vocab.get(token)
             if term_id is None or term_id in seen:
                 continue
@@ -99,7 +116,7 @@ class BM25Index:
         """Per-term contribution for one document — the audit trail."""
         norm = self.k1 * (1.0 - self.b + self.b * self.doc_len[doc_id] / max(self.avgdl, 1e-9))
         out: dict[str, float] = {}
-        for token in tokenize(query):
+        for token in self._terms(query):
             term_id = self.vocab.get(token)
             if term_id is None or token in out:
                 continue

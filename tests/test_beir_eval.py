@@ -18,7 +18,7 @@ import pytest
 
 from strata import beir
 from strata.beir import Dataset, DatasetSpec, _read_qrels, load
-from strata.beir_eval import _fuse, _to_run_entry, _weighted
+from strata.beir_eval import _fuse, _to_run_entry, _weighted, lexical_candidates
 from strata.fusion import top_k, weighted_fusion
 
 
@@ -29,6 +29,13 @@ from strata.fusion import top_k, weighted_fusion
 @pytest.mark.parametrize("seed", range(6))
 @pytest.mark.parametrize("alpha", [0.0, 0.3, 0.5, 0.7, 1.0])
 def test_benchmark_weighted_fusion_matches_the_engine(seed: int, alpha: float):
+    """Given the same candidate pool, the benchmark's fusion *is* the engine's.
+
+    The scoring arithmetic must be identical or the benchmark measures something
+    the product does not do. The pool the two build differs by design — see
+    `test_benchmark_pool_excludes_unmatched_lexical_documents` — so the pool is
+    passed in explicitly here to isolate the arithmetic from that choice.
+    """
     rng = np.random.default_rng(seed)
     n_docs = 500
     depth = 50
@@ -42,13 +49,46 @@ def test_benchmark_weighted_fusion_matches_the_engine(seed: int, alpha: float):
 
     mine = _weighted(lexical, semantic, alpha=alpha, depth=depth)
 
-    pool = np.union1d(top_k(lexical, depth), top_k(semantic, depth))
+    pool = np.union1d(lexical_candidates(lexical, depth), top_k(semantic, depth))
     theirs = weighted_fusion(lexical, semantic, alpha=alpha, limit=depth,
                              candidates=pool)
 
     assert [d for d, _ in mine] == [s.doc_id for s in theirs]
     for (_, score), scored in zip(mine, theirs):
         assert score == pytest.approx(scored.score, abs=1e-6)
+
+
+def test_benchmark_pool_excludes_unmatched_lexical_documents():
+    """The one deliberate divergence from the engine's pool construction.
+
+    `fusion.weighted_fusion` takes the lexical leg's top-k as given. The
+    benchmark first drops documents BM25 scored at exactly zero, because a run
+    file must contain only retrieved documents. A document can still reach the
+    pool through the dense leg, which genuinely scored it — the filter removes
+    it as a *lexical* candidate, not from consideration entirely.
+    """
+    lexical = np.array([4.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    semantic = np.array([0.1, 0.9, 0.2, 0.3], dtype=np.float32)
+
+    assert lexical_candidates(lexical, depth=4) == [0]
+    # The engine's top_k keeps the unmatched documents; their order among
+    # themselves is whatever numpy's sort happens to produce, which is exactly
+    # why letting them into a run was a lottery.
+    assert len(top_k(lexical, 4)) == 4
+    assert set(top_k(lexical, 4)) == {0, 1, 2, 3}
+
+    # Document 1 is unmatched lexically but is the dense leg's top hit, so it
+    # must still appear — via the dense leg. The filter removes a document as a
+    # lexical candidate, it does not blacklist it. (A cosine of 0.0 is a real
+    # similarity the dense leg computed; a BM25 of 0.0 is the absence of a
+    # posting. Only the second means "not retrieved".)
+    pooled = {d for d, _ in _weighted(lexical, semantic, alpha=0.5, depth=4)}
+    assert pooled == {0, 1, 2, 3}
+
+    # Where it bites is a shallow pool: with depth 1 the engine's lexical leg
+    # would nominate an unmatched document, and the benchmark nominates none.
+    assert lexical_candidates(lexical, depth=1) == [0]
+    assert lexical_candidates(np.zeros(4, dtype=np.float32), depth=4) == []
 
 
 def test_fuse_dispatches_every_mode():

@@ -186,6 +186,9 @@ def cmd_beir(args: argparse.Namespace) -> int:
             embedder=_make_embedder(args.embedder),
             alpha=args.alpha,
             depth=args.depth,
+            k1=args.k1,
+            b=args.b,
+            stem=args.stem,
             sweep_alpha=args.sweep_alpha,
         )
         reports.append(report)
@@ -323,6 +326,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-docs", type=int, default=None,
                    help="truncate the corpus for smoke tests; results stop "
                         "being comparable to published numbers")
+    p.add_argument("--stem", action="store_true",
+                   help="Porter-stem terms, matching Lucene's EnglishAnalyzer. "
+                        "Measurably closer to the published BM25 baselines "
+                        "(mean |delta| 0.0128 -> 0.0066); off by default so it "
+                        "never silently changes an already-published number")
+    p.add_argument("--k1", type=float, default=1.5, help="BM25 k1 (default 1.5)")
+    p.add_argument("--b", type=float, default=0.75, help="BM25 b (default 0.75)")
     p.add_argument("--ann", action="store_true",
                    help="also measure HNSW recall and latency against exact "
                         "search at this corpus size")

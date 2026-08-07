@@ -1,0 +1,82 @@
+[
+  {
+    "dataset": "nfcorpus",
+    "vocab_plain": 36107,
+    "vocab_stemmed": 28612,
+    "build_plain_s": 0.89,
+    "build_stemmed_s": 1.12,
+    "ndcg10_plain": 0.3063,
+    "ndcg10_stemmed": 0.31868,
+    "recall100_plain": 0.23617,
+    "recall100_stemmed": 0.24832,
+    "published": 0.322,
+    "significance": {
+      "delta": 0.01238,
+      "p_value": 0.0114
+    }
+  },
+  {
+    "dataset": "scifact",
+    "vocab_plain": 51359,
+    "vocab_stemmed": 41537,
+    "build_plain_s": 1.22,
+    "build_stemmed_s": 1.47,
+    "ndcg10_plain": 0.66132,
+    "ndcg10_stemmed": 0.68397,
+    "recall100_plain": 0.88922,
+    "recall100_stemmed": 0.93422,
+    "published": 0.679,
+    "significance": {
+      "delta": 0.02265,
+      "p_value": 0.0124
+    }
+  },
+  {
+    "dataset": "arguana",
+    "vocab_plain": 39679,
+    "vocab_stemmed": 28127,
+    "build_plain_s": 1.62,
+    "build_stemmed_s": 1.77,
+    "ndcg10_plain": 0.42038,
+    "ndcg10_stemmed": 0.40639,
+    "recall100_plain": 0.91607,
+    "recall100_stemmed": 0.90398,
+    "published": 0.397,
+    "significance": {
+      "delta": -0.01399,
+      "p_value": 0.008
+    }
+  },
+  {
+    "dataset": "scidocs",
+    "vocab_plain": 112445,
+    "vocab_stemmed": 90825,
+    "build_plain_s": 5.52,
+    "build_stemmed_s": 6.31,
+    "ndcg10_plain": 0.14965,
+    "ndcg10_stemmed": 0.15388,
+    "recall100_plain": 0.34973,
+    "recall100_stemmed": 0.35965,
+    "published": 0.149,
+    "significance": {
+      "delta": 0.00422,
+      "p_value": 0.1146
+    }
+  },
+  {
+    "dataset": "fiqa",
+    "vocab_plain": 103573,
+    "vocab_stemmed": 81966,
+    "build_plain_s": 7.81,
+    "build_stemmed_s": 8.8,
+    "ndcg10_plain": 0.22954,
+    "ndcg10_stemmed": 0.24621,
+    "recall100_plain": 0.51006,
+    "recall100_stemmed": 0.55881,
+    "published": 0.236,
+    "significance": {
+      "delta": 0.01667,
+      "p_value": 0.0154
+    }
+  }
+]

@@ -61,6 +61,7 @@ class DatasetReport:
     depth: int
     k1: float = 1.5
     b: float = 0.75
+    stem: bool = False
     build: dict[str, float] = field(default_factory=dict)
     modes: dict[str, ModeReport] = field(default_factory=dict)
     alpha_sweep: dict[str, float] = field(default_factory=dict)
@@ -81,6 +82,7 @@ class DatasetReport:
             "depth": self.depth,
             "bm25_k1": self.k1,
             "bm25_b": self.b,
+            "bm25_stem": self.stem,
             "build_seconds": {k: round(v, 2) for k, v in self.build.items()},
             "modes": {m: r.to_dict() for m, r in self.modes.items()},
             "alpha_sweep_oracle": {k: round(v, 5) for k, v in self.alpha_sweep.items()},
@@ -98,18 +100,20 @@ class _Legs:
     """The two retrieval legs, built once and reused across every mode."""
 
     def __init__(self, dataset: Dataset, embedder: Embedder, *, verbose: bool = True,
-                 k1: float = 1.5, b: float = 0.75):
+                 k1: float = 1.5, b: float = 0.75, stem: bool = False):
         corpus = dataset.to_corpus()
         texts = [c.indexable() for c in corpus.chunks]
         self.doc_ids = dataset.doc_ids
         self.timings: dict[str, float] = {}
 
         t0 = time.perf_counter()
-        self.bm25 = BM25Index(k1=k1, b=b).fit(texts)
+        self.bm25 = BM25Index(k1=k1, b=b, stem=stem).fit(texts)
         self.timings["bm25"] = time.perf_counter() - t0
         if verbose:
+            analyzer = "porter-stemmed" if stem else "unstemmed"
             print(f"  bm25   {self.timings['bm25']:6.2f}s  "
-                  f"({len(self.bm25.vocab):,} terms, {self.bm25.post_doc.size:,} postings)")
+                  f"({len(self.bm25.vocab):,} terms, {self.bm25.post_doc.size:,} postings, "
+                  f"{analyzer})")
 
         t0 = time.perf_counter()
         if isinstance(embedder, LSAEmbedder):
@@ -144,6 +148,27 @@ def _dense_scores(legs: _Legs, query_vecs: np.ndarray, block: int = 64) -> np.nd
     return out
 
 
+def lexical_candidates(lexical: np.ndarray, depth: int) -> list[int]:
+    """The documents the lexical leg actually retrieved, best first.
+
+    A BM25 score of exactly zero means no query term occurs in the document.
+    Lucene cannot return such a document — there is no posting to return — so
+    including it pads the run with something that was never retrieved.
+
+    This is not cosmetic, and it favoured us before it was fixed. On NFCorpus,
+    79 of 323 queries match fewer than ten documents at all; padding let three
+    queries score a relevant document with BM25 0.0 into the top ten purely on
+    the document-id tie-break, worth +0.0038 nDCG@10. The tell was that our
+    nDCG@10 changed with retrieval depth, which is impossible for a metric that
+    reads only the top ten.
+
+    Applied to *every* mode, not just the bm25 one: an unmatched document should
+    not enter an RRF ranking or a hybrid candidate pool through the lexical leg
+    either. It can still enter through the dense leg, which genuinely scored it.
+    """
+    return [d for d in top_k(lexical, depth) if lexical[d] > 0.0]
+
+
 def _fuse(mode: str, lexical: np.ndarray, semantic: np.ndarray, *,
           alpha: float, depth: int) -> list[tuple[int, float]]:
     """Produce a ranked (doc_index, score) list for one query, one mode.
@@ -152,23 +177,13 @@ def _fuse(mode: str, lexical: np.ndarray, semantic: np.ndarray, *,
     `Hit` construction afterwards is omitted.
     """
     if mode == "bm25":
-        # Only documents the lexical leg actually matched. A BM25 score of
-        # exactly zero means no query term occurs in the document, so returning
-        # it is padding a run rather than retrieving, and Lucene/Anserini never
-        # do it — a posting list simply has no entry for those documents.
-        #
-        # This is not cosmetic. On NFCorpus, 79 of 323 queries match fewer than
-        # ten documents at all, and padding the run let three queries score a
-        # relevant document that BM25 gave 0.0 into the top ten on the strength
-        # of the document-id tie-break alone. That lottery was worth +0.0038
-        # nDCG@10 to us. Measured, removed, and pinned by a test.
-        return [(d, float(lexical[d])) for d in top_k(lexical, depth)
-                if lexical[d] > 0.0]
+        return [(d, float(lexical[d])) for d in lexical_candidates(lexical, depth)]
     if mode == "vector":
         return [(d, float(semantic[d])) for d in top_k(semantic, depth)]
     if mode == "rrf":
         fused = reciprocal_rank_fusion(
-            {"bm25": top_k(lexical, depth), "vector": top_k(semantic, depth)},
+            {"bm25": lexical_candidates(lexical, depth),
+             "vector": top_k(semantic, depth)},
             limit=depth,
         )
         return [(s.doc_id, s.score) for s in fused]
@@ -189,7 +204,7 @@ def _weighted(lexical: np.ndarray, semantic: np.ndarray, *,
     like. The arithmetic — min-max each leg over the pool, interpolate by alpha
     — is identical.
     """
-    pool = np.union1d(top_k(lexical, depth), top_k(semantic, depth))
+    pool = np.union1d(lexical_candidates(lexical, depth), top_k(semantic, depth))
     if pool.size == 0:
         return []
     lex = lexical[pool]
@@ -210,7 +225,8 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
                 embedder: Embedder | None = None, alpha: float = 0.5,
                 depth: int = 1000, k_values: tuple[int, ...] = DEFAULT_K,
                 sweep_alpha: bool = False, verbose: bool = True,
-                k1: float = 1.5, b: float = 0.75) -> DatasetReport:
+                k1: float = 1.5, b: float = 0.75,
+                stem: bool = False) -> DatasetReport:
     """Index `dataset`, run every mode over its queries, and score the results.
 
     `k1` and `b` default to STRATA's shipped BM25 settings. Anserini's BEIR
@@ -219,7 +235,7 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
     tuning on the test set, and the two are reported separately in BEIR.md.
     """
     embedder = embedder or LSAEmbedder()
-    legs = _Legs(dataset, embedder, verbose=verbose, k1=k1, b=b)
+    legs = _Legs(dataset, embedder, verbose=verbose, k1=k1, b=b, stem=stem)
 
     query_ids = sorted(dataset.qrels)
     query_texts = [dataset.queries[q] for q in query_ids]
@@ -277,6 +293,7 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
         depth=depth,
         k1=k1,
         b=b,
+        stem=stem,
         build={**legs.timings, "dense_scoring": dense_seconds},
     )
 
