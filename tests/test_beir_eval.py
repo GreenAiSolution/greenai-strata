@@ -67,6 +67,37 @@ def test_fuse_rejects_unknown_mode():
         _fuse("magic", np.zeros(4), np.zeros(4), alpha=0.5, depth=2)
 
 
+def test_bm25_mode_never_returns_unmatched_documents():
+    """A BM25 score of exactly zero means no query term occurs in the document.
+
+    Returning those pads the run with documents the system did not retrieve,
+    which Lucene cannot do — there is no posting to return. It is not harmless:
+    on NFCorpus, where 79 of 323 queries match fewer than ten documents at all,
+    padding let relevant documents scoring 0.0 reach the top ten on the
+    document-id tie-break and inflated nDCG@10 by 0.0038.
+    """
+    lexical = np.array([3.0, 0.0, 1.5, 0.0, 0.0], dtype=np.float32)
+    semantic = np.zeros(5, dtype=np.float32)
+
+    ranked = _fuse("bm25", lexical, semantic, alpha=0.5, depth=1000)
+
+    assert [d for d, _ in ranked] == [0, 2]
+    assert all(score > 0 for _, score in ranked)
+
+
+def test_bm25_result_count_does_not_change_ndcg_at_10():
+    # nDCG@10 must depend only on the top ten. If asking for more results can
+    # change it, the run is being padded with things that were never retrieved.
+    rng = np.random.default_rng(0)
+    lexical = np.zeros(400, dtype=np.float32)
+    lexical[rng.choice(400, size=4, replace=False)] = rng.random(4) + 0.5
+    semantic = np.zeros(400, dtype=np.float32)
+
+    shallow = _fuse("bm25", lexical, semantic, alpha=0.5, depth=10)
+    deep = _fuse("bm25", lexical, semantic, alpha=0.5, depth=400)
+    assert [d for d, _ in shallow] == [d for d, _ in deep]
+
+
 def test_bm25_mode_ignores_the_vector_leg():
     lexical = np.array([0.0, 5.0, 0.0], dtype=np.float32)
     semantic = np.array([9.0, 0.0, 9.0], dtype=np.float32)

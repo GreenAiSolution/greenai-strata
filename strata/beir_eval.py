@@ -59,6 +59,8 @@ class DatasetReport:
     dim: int
     alpha: float
     depth: int
+    k1: float = 1.5
+    b: float = 0.75
     build: dict[str, float] = field(default_factory=dict)
     modes: dict[str, ModeReport] = field(default_factory=dict)
     alpha_sweep: dict[str, float] = field(default_factory=dict)
@@ -77,6 +79,8 @@ class DatasetReport:
             "dim": self.dim,
             "alpha": self.alpha,
             "depth": self.depth,
+            "bm25_k1": self.k1,
+            "bm25_b": self.b,
             "build_seconds": {k: round(v, 2) for k, v in self.build.items()},
             "modes": {m: r.to_dict() for m, r in self.modes.items()},
             "alpha_sweep_oracle": {k: round(v, 5) for k, v in self.alpha_sweep.items()},
@@ -93,14 +97,15 @@ class DatasetReport:
 class _Legs:
     """The two retrieval legs, built once and reused across every mode."""
 
-    def __init__(self, dataset: Dataset, embedder: Embedder, *, verbose: bool = True):
+    def __init__(self, dataset: Dataset, embedder: Embedder, *, verbose: bool = True,
+                 k1: float = 1.5, b: float = 0.75):
         corpus = dataset.to_corpus()
         texts = [c.indexable() for c in corpus.chunks]
         self.doc_ids = dataset.doc_ids
         self.timings: dict[str, float] = {}
 
         t0 = time.perf_counter()
-        self.bm25 = BM25Index().fit(texts)
+        self.bm25 = BM25Index(k1=k1, b=b).fit(texts)
         self.timings["bm25"] = time.perf_counter() - t0
         if verbose:
             print(f"  bm25   {self.timings['bm25']:6.2f}s  "
@@ -147,7 +152,18 @@ def _fuse(mode: str, lexical: np.ndarray, semantic: np.ndarray, *,
     `Hit` construction afterwards is omitted.
     """
     if mode == "bm25":
-        return [(d, float(lexical[d])) for d in top_k(lexical, depth)]
+        # Only documents the lexical leg actually matched. A BM25 score of
+        # exactly zero means no query term occurs in the document, so returning
+        # it is padding a run rather than retrieving, and Lucene/Anserini never
+        # do it — a posting list simply has no entry for those documents.
+        #
+        # This is not cosmetic. On NFCorpus, 79 of 323 queries match fewer than
+        # ten documents at all, and padding the run let three queries score a
+        # relevant document that BM25 gave 0.0 into the top ten on the strength
+        # of the document-id tie-break alone. That lottery was worth +0.0038
+        # nDCG@10 to us. Measured, removed, and pinned by a test.
+        return [(d, float(lexical[d])) for d in top_k(lexical, depth)
+                if lexical[d] > 0.0]
     if mode == "vector":
         return [(d, float(semantic[d])) for d in top_k(semantic, depth)]
     if mode == "rrf":
@@ -193,10 +209,17 @@ def _weighted(lexical: np.ndarray, semantic: np.ndarray, *,
 def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
                 embedder: Embedder | None = None, alpha: float = 0.5,
                 depth: int = 1000, k_values: tuple[int, ...] = DEFAULT_K,
-                sweep_alpha: bool = False, verbose: bool = True) -> DatasetReport:
-    """Index `dataset`, run every mode over its queries, and score the results."""
+                sweep_alpha: bool = False, verbose: bool = True,
+                k1: float = 1.5, b: float = 0.75) -> DatasetReport:
+    """Index `dataset`, run every mode over its queries, and score the results.
+
+    `k1` and `b` default to STRATA's shipped BM25 settings. Anserini's BEIR
+    configuration uses k1=0.9, b=0.4; passing those is *matching the reference
+    implementation's published configuration*, which is a different thing from
+    tuning on the test set, and the two are reported separately in BEIR.md.
+    """
     embedder = embedder or LSAEmbedder()
-    legs = _Legs(dataset, embedder, verbose=verbose)
+    legs = _Legs(dataset, embedder, verbose=verbose, k1=k1, b=b)
 
     query_ids = sorted(dataset.qrels)
     query_texts = [dataset.queries[q] for q in query_ids]
@@ -252,6 +275,8 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
         dim=int(legs.vectors.shape[1]),
         alpha=alpha,
         depth=depth,
+        k1=k1,
+        b=b,
         build={**legs.timings, "dense_scoring": dense_seconds},
     )
 
