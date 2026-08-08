@@ -62,6 +62,9 @@ class DatasetReport:
     k1: float = 1.5
     b: float = 0.75
     stem: bool = False
+    #: Queries that embed to the zero vector (every term out of the embedder's
+    #: vocabulary). Their dense leg falls back to the lexical ranking.
+    n_zero_vector_queries: int = 0
     build: dict[str, float] = field(default_factory=dict)
     modes: dict[str, ModeReport] = field(default_factory=dict)
     alpha_sweep: dict[str, float] = field(default_factory=dict)
@@ -83,6 +86,7 @@ class DatasetReport:
             "bm25_k1": self.k1,
             "bm25_b": self.b,
             "bm25_stem": self.stem,
+            "n_zero_vector_queries": self.n_zero_vector_queries,
             "build_seconds": {k: round(v, 2) for k, v in self.build.items()},
             "modes": {m: r.to_dict() for m, r in self.modes.items()},
             "alpha_sweep_oracle": {k: round(v, 5) for k, v in self.alpha_sweep.items()},
@@ -185,31 +189,49 @@ def lexical_candidates(lexical: np.ndarray, depth: int) -> np.ndarray:
 
 
 def _fuse(mode: str, lexical: np.ndarray, semantic: np.ndarray, *,
-          alpha: float, depth: int) -> list[tuple[int, float]]:
+          alpha: float, depth: int,
+          dense_fallback: bool = False) -> list[tuple[int, float]]:
     """Produce a ranked (doc_index, score) list for one query, one mode.
 
     This mirrors the branch structure of `SearchEngine.search` exactly; only the
     `Hit` construction afterwards is omitted.
+
+    `dense_fallback=True` means the query embedded to the zero vector — every
+    term is out of the embedder's vocabulary (35 of NFCorpus's 323 queries under
+    LSA at min_df=2) — so its cosine against every document is exactly 0.0 and a
+    "dense" ranking would be an arbitrary tie-break over the whole corpus. The
+    dense leg then falls back to the lexical ranking: the one signal that
+    actually exists for this query. The fallback uses `lexical_candidates`, not
+    `top_k`, so it cannot smuggle unmatched zero-BM25 documents into a run
+    through the dense leg either. A query with a zero vector *and* no lexical
+    match retrieves nothing, and scores as such.
     """
     if mode == "bm25":
         return [(int(d), float(lexical[d]))
                 for d in lexical_candidates(lexical, depth)]
     if mode == "vector":
+        if dense_fallback:
+            return [(int(d), float(lexical[d]))
+                    for d in lexical_candidates(lexical, depth)]
         return [(d, float(semantic[d])) for d in top_k(semantic, depth)]
     if mode == "rrf":
+        dense_leg = ([int(d) for d in lexical_candidates(lexical, depth)]
+                     if dense_fallback else top_k(semantic, depth))
         fused = reciprocal_rank_fusion(
             {"bm25": [int(d) for d in lexical_candidates(lexical, depth)],
-             "vector": top_k(semantic, depth)},
+             "vector": dense_leg},
             limit=depth,
         )
         return [(s.doc_id, s.score) for s in fused]
     if mode == "hybrid":
-        return _weighted(lexical, semantic, alpha=alpha, depth=depth)
+        return _weighted(lexical, semantic, alpha=alpha, depth=depth,
+                         dense_fallback=dense_fallback)
     raise ValueError(f"unknown mode: {mode!r}")
 
 
 def _weighted(lexical: np.ndarray, semantic: np.ndarray, *,
-              alpha: float, depth: int) -> list[tuple[int, float]]:
+              alpha: float, depth: int,
+              dense_fallback: bool = False) -> list[tuple[int, float]]:
     """Weighted score fusion over the union of both legs' candidate pools.
 
     Reimplemented here rather than calling `fusion.weighted_fusion` for one
@@ -219,9 +241,17 @@ def _weighted(lexical: np.ndarray, semantic: np.ndarray, *,
     depth both legs contributed, so the comparison between modes is like for
     like. The arithmetic — min-max each leg over the pool, interpolate by alpha
     — is identical.
+
+    With `dense_fallback` (zero-vector query, see `_fuse`) the semantic leg is
+    replaced by the lexical scores over the lexical candidates, which reduces
+    the fusion to the lexical ranking for any alpha.
     """
-    pool = np.union1d(lexical_candidates(lexical, depth),
-                      np.asarray(top_k(semantic, depth), dtype=np.int64))
+    if dense_fallback:
+        pool = lexical_candidates(lexical, depth)
+        semantic = lexical
+    else:
+        pool = np.union1d(lexical_candidates(lexical, depth),
+                          np.asarray(top_k(semantic, depth), dtype=np.int64))
     if pool.size == 0:
         return []
     lex = lexical[pool]
@@ -261,6 +291,18 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
     query_vecs = legs.query_vectors(query_texts)
     dense_elapsed = [time.perf_counter() - t0]     # embed cost + streamed matmuls
 
+    # A query whose every term is out of the embedder's vocabulary embeds to
+    # the zero vector: cosine 0.0 against everything, so a "dense" ranking for
+    # it is an arbitrary tie-break. Detect those up front; `_fuse` falls back
+    # to the lexical ranking for them instead of scoring against noise. (On
+    # NFCorpus with LSA at min_df=2 that is 35 of 323 queries; see BEIR.md.)
+    zero_vector = np.linalg.norm(query_vecs, axis=1) <= 1e-6
+    n_zero = int(zero_vector.sum())
+    if verbose and n_zero:
+        print(f"  !! {n_zero}/{len(query_ids):,} queries embed to the zero "
+              f"vector (no in-vocabulary terms); their dense leg falls back "
+              f"to the lexical ranking")
+
     # Streamed: one block of rows at a time, never n_queries × n_docs at once.
     semantic_rows = _dense_scores(legs.vectors, query_vecs, elapsed=dense_elapsed)
 
@@ -277,16 +319,18 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
     for i, query_id in enumerate(query_ids):
         lexical = legs.bm25.score(query_texts[i])
         semantic = next(semantic_rows)
+        fallback = bool(zero_vector[i])
 
         for mode in modes:
             t0 = time.perf_counter()
-            ranked = _fuse(mode, lexical, semantic, alpha=alpha, depth=depth)
+            ranked = _fuse(mode, lexical, semantic, alpha=alpha, depth=depth,
+                           dense_fallback=fallback)
             elapsed[mode] += time.perf_counter() - t0
             runs[mode][query_id] = _to_run_entry(ranked, legs.doc_ids, dataset, query_id)
 
         for sweep_value in sweep_runs:
             ranked = _weighted(lexical, semantic, alpha=sweep_value,
-                               depth=sweep_depth)
+                               depth=sweep_depth, dense_fallback=fallback)
             sweep_runs[sweep_value][query_id] = _to_run_entry(
                 ranked, legs.doc_ids, dataset, query_id
             )
@@ -312,6 +356,7 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
         k1=k1,
         b=b,
         stem=stem,
+        n_zero_vector_queries=n_zero,
         build={**legs.timings, "dense_scoring": dense_elapsed[0]},
     )
 

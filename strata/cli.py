@@ -90,7 +90,11 @@ def cmd_search(args: argparse.Namespace) -> int:
     print(f"{DIM}{trace.mode}"
           + (f" α={trace.alpha:g}" if trace.mode == "hybrid" else "")
           + (f" + {trace.reranker}" if trace.reranker else "")
-          + f"  ·  {stages}{RESET}\n")
+          + f"  ·  {stages}{RESET}")
+    if trace.dense_fallback:
+        print(f"{YELLOW}note{RESET} {DIM}query has no in-vocabulary terms for "
+              f"the embedder; dense leg fell back to the lexical ranking{RESET}")
+    print()
 
     for rank, hit in enumerate(hits, start=1):
         print(f"{BOLD}{rank:2}. {hit.title}{RESET}")

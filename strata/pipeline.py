@@ -61,6 +61,10 @@ class SearchTrace:
     candidates: int
     reranker: str | None
     timings_ms: dict[str, float] = field(default_factory=dict)
+    #: True when the query embedded to the zero vector and the dense leg fell
+    #: back to the lexical scores. Surfaced so a caller can see that "vector"
+    #: numbers for this query are really BM25 numbers.
+    dense_fallback: bool = False
 
 
 class SearchEngine:
@@ -138,8 +142,19 @@ class SearchEngine:
 
         t0 = time.perf_counter()
         query_vec = self.embedder.embed_queries([query])[0]
+        dense_fallback = float(np.linalg.norm(query_vec)) <= 1e-6
         want_ann = self.ann is not None if use_ann is None else (use_ann and self.ann)
-        if want_ann:
+        if dense_fallback:
+            # Every query term is outside the embedder's vocabulary, so the
+            # query embeds to the zero vector and its cosine against every
+            # document is exactly 0.0 — a "dense" ranking would be an arbitrary
+            # tie-break over the whole corpus (and the ANN graph would walk to
+            # nowhere). Fall back to the one signal that exists: the lexical
+            # scores. Vector and hybrid modes then reduce to the BM25 ranking
+            # for this query, which is honest rather than random. The trace
+            # records it so the caller knows what the numbers mean.
+            semantic = lexical
+        elif want_ann:
             # Documents the graph did not return need a sentinel that sorts
             # *below* everything it did. Zero is the wrong choice: cosine over
             # signed LSA vectors is legitimately negative for roughly half a
@@ -206,7 +221,8 @@ class SearchEngine:
 
         trace = SearchTrace(query=query, mode=mode, alpha=alpha,
                             candidates=len(ranked), reranker=reranker_name,
-                            timings_ms={k_: round(v, 2) for k_, v in timings.items()})
+                            timings_ms={k_: round(v, 2) for k_, v in timings.items()},
+                            dense_fallback=dense_fallback)
         return hits[:k], trace
 
     def _to_hit(self, scored: Scored, query: str, lexical, semantic) -> Hit:

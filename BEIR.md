@@ -156,7 +156,7 @@ untuned. **With `bge-base-en-v1.5` as the dense leg:**
 
 | dataset  |   bm25 | vector |    rrf |     hybrid | hybrid − bm25 |
 |----------|-------:|-------:|-------:|-----------:|--------------:|
-| nfcorpus | 0.3187 | 0.2835 | 0.3090 | **0.3348** | +0.0161 (p .002) |
+| nfcorpus | 0.3187 | 0.2939 | 0.3099 | **0.3332** | +0.0145 (p .004) |
 | scifact  | **0.6840** | 0.4829 | 0.5996 | 0.6675 | −0.0164 (n.s., p .128) |
 | arguana  | 0.4064 | 0.4572 | 0.4568 | **0.4708** | +0.0644 (p .000) |
 | scidocs  | **0.1539** | 0.0804 | 0.1201 | 0.1465 | −0.0074 (p .010) |
@@ -164,6 +164,19 @@ untuned. **With `bge-base-en-v1.5` as the dense leg:**
 
 Every difference is tested against the BM25 baseline with a paired bootstrap
 over per-query nDCG@10 (10,000 resamples).
+
+**A note on the NFCorpus row.** 35 of NFCorpus's 323 queries embed to the zero
+vector under LSA at `min_df=2` — every term out of vocabulary — so their
+"dense" ranking used to be an arbitrary tie-break over 3,633 documents. The
+harness now falls back to the lexical ranking for exactly those queries (the
+other four datasets have none, and their numbers are bit-identical before and
+after). Re-measured, the change cut three ways and all three are reported:
+`vector` rose 0.2835 → 0.2939 and `rrf` 0.3090 → 0.3099, because a real signal
+replaced a coin flip; but `hybrid` *fell* 0.3348 → 0.3332, because for those
+queries the old candidate pool was padded with up to a thousand arbitrary
+zero-cosine documents, and with 38 relevant documents per query some of that
+padding landed lucky. The old hybrid number was partly coin-flip credit; the
+new one is smaller and real.
 
 ---
 
@@ -401,11 +414,15 @@ approximation error, and stands.
 - **The dense leg is a local LSA embedder, by design.** These are not
   competitive dense-retrieval numbers and are not offered as such. They are the
   floor a real encoder should be measured against.
-- **Out-of-vocabulary queries have no dense representation at all.** The
-  degenerate-query problem above is contained for the ANN measurement, but the
-  `vector` and `rrf` columns still include those queries, ranked by an arbitrary
-  tie-break. On NFCorpus that is 35 of 323 queries. Lowering `min_df` or falling
-  back to the lexical leg would fix it; neither is done yet.
+- **Out-of-vocabulary queries have no dense representation at all.** A query
+  whose every term the embedder's vocabulary dropped embeds to the zero vector
+  and cannot be ranked densely. The engine and the harness now fall back to the
+  lexical ranking for exactly those queries (35 of 323 on NFCorpus; zero on the
+  other four datasets) instead of scoring an arbitrary tie-break — see the note
+  under the LSA table in §2 for what that measurably changed, including the
+  number it made *worse*. The underlying limitation stands: the bundled LSA
+  embedder simply has nothing to say about a term it never learned, and the
+  fallback makes the failure honest rather than making it disappear.
 - **The Claude re-ranker is still unrun.** `ClaudeReranker` has no measured
   numbers anywhere in this repo, here included, because this machine has no
   Anthropic API key. Every re-ranking figure comes from the offline

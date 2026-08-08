@@ -178,6 +178,13 @@ on the same queries**. An unmeasured ANN layer is a silent recall bug.
 Both are implemented and the harness sweeps alpha, so the choice is a
 measurement rather than a preference.
 
+One degenerate case is handled explicitly: a query whose every term is outside
+the embedder's vocabulary embeds to the zero vector, making its cosine against
+every document exactly 0.0 — a "dense" ranking for it is an arbitrary
+tie-break. The dense leg falls back to the lexical ranking for such queries
+(35 of NFCorpus's 323 under the bundled LSA embedder), and the trace says so
+rather than letting coin-flip numbers pass as measurements.
+
 ### 6. Re-ranking (`rerank.py`)
 
 Retrieval scores query and document *independently* — one vector each — because

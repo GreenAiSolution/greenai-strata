@@ -357,6 +357,137 @@ def test_streamed_dense_scores_accumulates_elapsed_time():
 
 
 # --------------------------------------------------------------------------- #
+# Zero-vector queries: the dense leg must fall back to the lexical ranking
+# --------------------------------------------------------------------------- #
+
+def _oov_query():
+    """A query with lexical matches whose embedding is the zero vector.
+
+    35 of NFCorpus's 323 queries do this under LSA at min_df=2 — single rare
+    words the vocabulary dropped. Their cosine against every document is 0.0,
+    so a dense ranking would be an arbitrary tie-break over the corpus.
+    """
+    lexical = np.array([0.0, 3.0, 0.0, 7.0, 1.0, 0.0], dtype=np.float32)
+    semantic = np.zeros(6, dtype=np.float32)
+    return lexical, semantic
+
+
+def test_fallback_vector_mode_returns_the_lexical_ranking():
+    lexical, semantic = _oov_query()
+    ranked = _fuse("vector", lexical, semantic, alpha=0.5, depth=6,
+                   dense_fallback=True)
+    assert [d for d, _ in ranked] == [3, 1, 4]
+    assert [s for _, s in ranked] == [7.0, 3.0, 1.0]
+
+
+def test_fallback_never_pads_with_unmatched_documents():
+    # The fallback must go through `lexical_candidates`, not `top_k`: a zero
+    # BM25 score means "not retrieved", and the dense leg falling back to the
+    # lexical leg must not reintroduce the padding defect through the back door.
+    lexical, semantic = _oov_query()
+    for mode in ("vector", "rrf", "hybrid"):
+        ranked = _fuse(mode, lexical, semantic, alpha=0.5, depth=6,
+                       dense_fallback=True)
+        assert {d for d, _ in ranked} == {1, 3, 4}, mode
+
+
+def test_fallback_rrf_and_hybrid_reduce_to_the_lexical_order():
+    lexical, semantic = _oov_query()
+    want = [3, 1, 4]
+    for mode in ("rrf", "hybrid"):
+        ranked = _fuse(mode, lexical, semantic, alpha=0.5, depth=6,
+                       dense_fallback=True)
+        assert [d for d, _ in ranked] == want, mode
+
+
+def test_fallback_hybrid_is_alpha_invariant():
+    # With both legs identical, min-max of each over the pool is identical, so
+    # the interpolation must produce the same ordering for every alpha.
+    lexical, semantic = _oov_query()
+    orders = {
+        alpha: [d for d, _ in _weighted(lexical, semantic, alpha=alpha,
+                                        depth=6, dense_fallback=True)]
+        for alpha in (0.0, 0.3, 0.5, 0.8, 1.0)
+    }
+    assert len({tuple(o) for o in orders.values()}) == 1
+
+
+def test_fallback_with_no_lexical_match_retrieves_nothing():
+    # Zero vector *and* no lexical match: neither leg has any signal, and the
+    # honest run is empty — not a coin flip over the corpus.
+    lexical = np.zeros(6, dtype=np.float32)
+    semantic = np.zeros(6, dtype=np.float32)
+    for mode in ("bm25", "vector", "rrf", "hybrid"):
+        assert _fuse(mode, lexical, semantic, alpha=0.5, depth=6,
+                     dense_fallback=True) == [], mode
+
+
+def test_no_fallback_leaves_the_dense_leg_untouched():
+    # dense_fallback=False must be exactly the old behaviour.
+    rng = np.random.default_rng(5)
+    lexical = rng.random(50).astype(np.float32)
+    semantic = rng.random(50).astype(np.float32)
+    for mode in ("bm25", "vector", "rrf", "hybrid"):
+        a = _fuse(mode, lexical, semantic, alpha=0.5, depth=20)
+        b = _fuse(mode, lexical, semantic, alpha=0.5, depth=20,
+                  dense_fallback=False)
+        assert a == b, mode
+
+
+def test_engine_falls_back_when_the_query_embeds_to_zero():
+    """The product path: `SearchEngine.search` on an out-of-vocabulary query."""
+    from strata.corpus import Chunk, Corpus
+    from strata.lexical import BM25Index
+    from strata.pipeline import SearchEngine
+
+    rng = np.random.default_rng(0)
+    n = 40
+    vectors = rng.standard_normal((n, 8)).astype(np.float32)
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+
+    corpus = Corpus(chunks=[
+        Chunk(id=i, doc_id=f"d{i}", title=f"t{i}",
+              text=f"zoloft dosage note {i}" if i < 3 else f"other topic {i}",
+              start_line=1, n_tokens=4)
+        for i in range(n)
+    ])
+
+    class _ZeroForQueries:
+        name, dim = "zero-query", 8
+
+        def embed_documents(self, texts):
+            return vectors
+
+        def embed_queries(self, texts):
+            return np.zeros((len(texts), 8), dtype=np.float32)
+
+    bm25 = BM25Index().fit([c.indexable() for c in corpus.chunks])
+    engine = SearchEngine(corpus, _ZeroForQueries(), bm25, vectors)
+
+    for mode in ("vector", "rrf", "hybrid"):
+        hits, trace = engine.search("zoloft", k=3, mode=mode)
+        assert trace.dense_fallback, mode
+        assert hits, mode
+        # The lexical leg is the only signal; the top hits must be the chunks
+        # that actually contain the query term, not an arbitrary tie-break.
+        assert {h.doc_id for h in hits[:3]} <= {0, 1, 2}, mode
+
+    # A query with real vocabulary coverage must not trip the fallback flag.
+    class _Real:
+        name, dim = "real", 8
+
+        def embed_documents(self, texts):
+            return vectors
+
+        def embed_queries(self, texts):
+            return vectors[:len(texts)]
+
+    engine = SearchEngine(corpus, _Real(), bm25, vectors)
+    _, trace = engine.search("zoloft", k=3, mode="rrf")
+    assert not trace.dense_fallback
+
+
+# --------------------------------------------------------------------------- #
 # The ANN "not retrieved" sentinel must sort below real negative similarities
 # --------------------------------------------------------------------------- #
 
