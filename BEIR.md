@@ -391,9 +391,13 @@ approximation error, and stands.
 
 - **Five datasets, not eighteen.** The suite covers 3.6k–57.6k documents. The
   million-document BEIR datasets are registered in `strata/beir.py` but have not
-  been run; `_dense_scores` holds an `n_queries × n_docs` matrix and would need
-  to become a generator first. Claiming a BEIR average from a five-dataset
-  subset would be misleading, so there is no average row in this document.
+  been run. The harness-side blocker is gone — `_dense_scores` now streams
+  cosine rows block by block instead of materialising the full
+  `n_queries × n_docs` matrix (peak memory 64 × n_docs, verified numerically
+  identical at the shipped block size) — but embedding a million documents with
+  the bundled LSA encoder is untested and unmeasured, so no claim is made until
+  it runs. Claiming a BEIR average from a five-dataset subset would be
+  misleading, so there is no average row in this document.
 - **The dense leg is a local LSA embedder, by design.** These are not
   competitive dense-retrieval numbers and are not offered as such. They are the
   floor a real encoder should be measured against.

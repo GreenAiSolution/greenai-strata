@@ -18,7 +18,8 @@ import pytest
 
 from strata import beir
 from strata.beir import Dataset, DatasetSpec, _read_qrels, load
-from strata.beir_eval import _fuse, _to_run_entry, _weighted, lexical_candidates
+from strata.beir_eval import (_dense_scores, _fuse, _to_run_entry, _weighted,
+                              lexical_candidates)
 from strata.fusion import top_k, weighted_fusion
 
 
@@ -294,6 +295,65 @@ def test_lexical_candidate_ids_index_correctly():
     lexical = np.array([0.0, 2.0, 0.0, 5.0], dtype=np.float32)
     candidates = lexical_candidates(lexical, 4)
     assert list(lexical[candidates]) == [5.0, 2.0]
+
+
+# --------------------------------------------------------------------------- #
+# Streamed dense scoring must be numerically identical to the full matrix
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("n_queries,block", [(1, 64), (64, 64), (65, 64),
+                                             (200, 64), (200, 7), (200, 1)])
+def test_streamed_dense_scores_match_the_full_matmul(n_queries: int, block: int):
+    """The generator must change memory behaviour and nothing else.
+
+    Streaming exists so the harness stops holding an n_queries × n_docs matrix;
+    it is only measurement-neutral if every yielded row equals the row the full
+    matmul would have produced, at every block boundary. Bit-equality is
+    demanded at the shipped block size in the test below (same matmul, block
+    for block); across *different* block shapes BLAS picks different kernels
+    and float32 summation order shifts by ~1e-6 relative, so this test asserts
+    a tolerance instead.
+    """
+    import types
+
+    rng = np.random.default_rng(7)
+    vectors = rng.standard_normal((333, 32)).astype(np.float32)
+    query_vecs = rng.standard_normal((n_queries, 32)).astype(np.float32)
+
+    full = np.asarray(query_vecs @ vectors.T, dtype=np.float32)
+
+    gen = _dense_scores(vectors, query_vecs, block=block)
+    assert isinstance(gen, types.GeneratorType), \
+        "streaming means a generator, not a materialised array"
+    rows = list(gen)
+    assert len(rows) == n_queries
+    streamed = np.stack(rows)
+    np.testing.assert_allclose(streamed, full, rtol=1e-5, atol=1e-5)
+
+
+def test_streamed_dense_scores_default_block_is_bit_identical():
+    # The shipped block size is the one the published numbers were produced
+    # with, so at that size the stream must be bit-for-bit the old matrix.
+    rng = np.random.default_rng(11)
+    vectors = rng.standard_normal((500, 24)).astype(np.float32)
+    query_vecs = rng.standard_normal((150, 24)).astype(np.float32)
+
+    old = np.empty((150, 500), dtype=np.float32)
+    for start in range(0, 150, 64):
+        stop = min(start + 64, 150)
+        old[start:stop] = query_vecs[start:stop] @ vectors.T
+
+    streamed = np.stack(list(_dense_scores(vectors, query_vecs)))
+    assert np.array_equal(streamed, old)
+
+
+def test_streamed_dense_scores_accumulates_elapsed_time():
+    rng = np.random.default_rng(3)
+    vectors = rng.standard_normal((100, 8)).astype(np.float32)
+    query_vecs = rng.standard_normal((10, 8)).astype(np.float32)
+    elapsed = [0.0]
+    list(_dense_scores(vectors, query_vecs, elapsed=elapsed))
+    assert elapsed[0] > 0.0
 
 
 # --------------------------------------------------------------------------- #

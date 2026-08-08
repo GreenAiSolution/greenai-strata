@@ -129,23 +129,31 @@ class _Legs:
         return self.embedder.embed_queries(queries)
 
 
-def _dense_scores(legs: _Legs, query_vecs: np.ndarray, block: int = 64) -> np.ndarray:
-    """Cosine similarity of every query against every document.
+def _dense_scores(vectors: np.ndarray, query_vecs: np.ndarray, block: int = 64,
+                  elapsed: list[float] | None = None):
+    """Cosine similarity of every query against every document, streamed.
 
-    Blocking bounds the *temporary* numpy allocates for each matmul, not the
-    result: the returned array is the full `n_queries × n_docs` and that is the
-    real memory bound. At the scale of the default suite that is fine — FiQA's
-    648 × 57,638 float32 matrix is 149 MB — but it is linear in both dimensions,
-    so a million-document corpus with a thousand queries would want 4 GB and
-    this function would need to become a generator feeding the query loop
-    directly. Recorded here because the limit is a property of the harness, not
-    of the engine, and it is the first thing that breaks on the large BEIR sets.
+    Yields one `n_docs` row per query, computing `block` queries per matmul, so
+    peak memory is `block × n_docs` rather than `n_queries × n_docs`. An earlier
+    version materialised the full matrix — fine for the default suite (FiQA's
+    648 × 57,638 float32 matrix is 149 MB) but linear in both dimensions, so a
+    million-document corpus with a thousand queries would have wanted 4 GB.
+    Streaming is what unblocks the large BEIR sets.
+
+    The arithmetic is unchanged: the same `block`-sized matmuls, in the same
+    order, now handed out row by row instead of copied into one big array —
+    so every downstream number is identical to the materialised version.
+
+    Pass a one-element list as `elapsed` to accumulate the scoring seconds,
+    which are now interleaved with the query loop rather than a separate phase.
     """
-    out = np.empty((query_vecs.shape[0], legs.vectors.shape[0]), dtype=np.float32)
     for start in range(0, query_vecs.shape[0], block):
         stop = min(start + block, query_vecs.shape[0])
-        out[start:stop] = query_vecs[start:stop] @ legs.vectors.T
-    return out
+        t0 = time.perf_counter()
+        rows = np.asarray(query_vecs[start:stop] @ vectors.T, dtype=np.float32)
+        if elapsed is not None:
+            elapsed[0] += time.perf_counter() - t0
+        yield from rows
 
 
 def lexical_candidates(lexical: np.ndarray, depth: int) -> np.ndarray:
@@ -251,10 +259,10 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
 
     t0 = time.perf_counter()
     query_vecs = legs.query_vectors(query_texts)
-    semantic_all = _dense_scores(legs, query_vecs)
-    dense_seconds = time.perf_counter() - t0
-    if verbose:
-        print(f"  dense  {dense_seconds:6.2f}s  ({len(query_ids):,} queries scored)")
+    dense_elapsed = [time.perf_counter() - t0]     # embed cost + streamed matmuls
+
+    # Streamed: one block of rows at a time, never n_queries × n_docs at once.
+    semantic_rows = _dense_scores(legs.vectors, query_vecs, elapsed=dense_elapsed)
 
     runs: dict[str, Run] = {m: {} for m in modes}
     elapsed: dict[str, float] = {m: 0.0 for m in modes}
@@ -268,7 +276,7 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
     t_start = time.perf_counter()
     for i, query_id in enumerate(query_ids):
         lexical = legs.bm25.score(query_texts[i])
-        semantic = semantic_all[i]
+        semantic = next(semantic_rows)
 
         for mode in modes:
             t0 = time.perf_counter()
@@ -277,7 +285,8 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
             runs[mode][query_id] = _to_run_entry(ranked, legs.doc_ids, dataset, query_id)
 
         for sweep_value in sweep_runs:
-            ranked = _weighted(lexical, semantic, alpha=sweep_value, depth=sweep_depth)
+            ranked = _weighted(lexical, semantic, alpha=sweep_value,
+                               depth=sweep_depth)
             sweep_runs[sweep_value][query_id] = _to_run_entry(
                 ranked, legs.doc_ids, dataset, query_id
             )
@@ -303,7 +312,7 @@ def run_dataset(dataset: Dataset, *, modes: tuple[str, ...] = MODES,
         k1=k1,
         b=b,
         stem=stem,
-        build={**legs.timings, "dense_scoring": dense_seconds},
+        build={**legs.timings, "dense_scoring": dense_elapsed[0]},
     )
 
     for mode in modes:
