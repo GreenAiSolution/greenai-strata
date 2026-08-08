@@ -129,11 +129,21 @@ class SearchEngine:
         out = body[best_pos : best_pos + width]
         return ("…" if best_pos else "") + out + ("…" if best_pos + width < len(body) else "")
 
-    def search(self, query: str, *, k: int = 10, mode: str = "hybrid",
+    def search(self, query: str, *, k: int = 10, mode: str = "rrf",
                alpha: float = 0.5, candidates: int = 60,
                reranker=None, rerank_depth: int = 25,
                ef: int = 96, use_ann: bool | None = None
                ) -> tuple[list[Hit], SearchTrace]:
+        """Retrieve, fuse, optionally re-rank. Returns hits plus the trace.
+
+        The default fusion mode is RRF, and that is a measured choice, not a
+        preference. On BEIR with a real encoder (bge-base-en-v1.5) the oracle
+        alpha is 0.8–0.9 on all five datasets, so the shipped alpha=0.5
+        weighted hybrid is never the best mode — while parameter-free RRF comes
+        within 0.001 of the best mode on two datasets without tuning anything.
+        Weighted fusion stays fully available (`mode="hybrid"`, `alpha=...`)
+        for corpora where a tuned alpha is worth it; see BEIR.md §3.
+        """
         timings: dict[str, float] = {}
 
         t0 = time.perf_counter()

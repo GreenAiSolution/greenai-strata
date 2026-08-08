@@ -65,10 +65,13 @@ one at p ≤ 0.001.** With the bundled offline LSA floor it wins on only two of
 five. The architecture works; the dependency-free embedder was what held it
 back, and both configurations are reported rather than only the flattering one.
 
-One finding worth acting on: at the shipped α = 0.5 the weighted hybrid is
-*never* the best mode once the encoder is good — the oracle α is 0.8–0.9
+One finding was worth acting on, and has been: at α = 0.5 the weighted hybrid
+is *never* the best mode once the encoder is good — the oracle α is 0.8–0.9
 everywhere, and parameter-free RRF gets within 0.001 of the best mode without
-tuning anything.
+tuning anything. **RRF is now the default fusion mode** (`strata search` and
+`SearchEngine.search`); weighted fusion remains one flag away
+(`--mode hybrid --alpha …`). The oracle α itself was *not* adopted as a
+default — it is tuned on test labels and stays labelled as such.
 
 Full numbers, significance tests, and the three defects an adversarial audit
 found — including a wrong diagnosis this project had already published — are in
@@ -100,7 +103,7 @@ python3 -m strata.cli --index ./index serve   # http://127.0.0.1:8105
 ```bash
 python3 tests/test_strata.py     # 33 assertions, ~6 seconds, no test framework
 
-pip install -e '.[dev]' && pytest tests/    # 205 tests including the BEIR harness
+pip install -e '.[dev]' && pytest tests/    # 221 tests including the BEIR harness
 ```
 
 The BEIR metrics are differentially tested against `pytrec_eval` — the binding
@@ -170,7 +173,10 @@ on the same queries**. An unmeasured ANN layer is a silent recall bug.
 ### 5. Fusion (`fusion.py`)
 
 - **Reciprocal Rank Fusion** — fuses ranks, ignores scores. Scale-free, no
-  tuning, hard to break. The right default when you cannot calibrate.
+  tuning, hard to break. **The shipped default**, on measured evidence: with a
+  real encoder the oracle α is 0.8–0.9 on all five BEIR datasets, so any fixed
+  untuned α loses somewhere, while RRF lands within 0.001 of the best mode on
+  two datasets with nothing to tune ([BEIR.md §3](BEIR.md)).
 - **Weighted score fusion** — normalises both legs over the *candidate pool*
   (not the corpus: min-maxing across 1,300 docs where 1,290 score zero squashes
   the interesting range to nothing) and interpolates with `alpha`.
@@ -335,7 +341,11 @@ RRF gives both legs an equal vote regardless of quality. On `keyword` queries,
 where the LSA vector leg is weakest, an equal vote costs it: RRF scores 0.114
 nDCG against weighted fusion's 0.131 at α=0.5. The tuning knob earns its keep
 precisely when one leg is weaker — which is the common case in production, and
-the reason to implement both rather than pick one on principle.
+the reason to implement both rather than pick one on principle. (This table is
+the weak-encoder case; the shipped default is still RRF, chosen on the BEIR
+evidence with a strong encoder where a fixed untuned α is never best — both
+measurements are reported, and the knob is one flag away when your corpus
+rewards it.)
 
 **4. The feature-based re-ranker makes things worse, consistently.** −0.08 nDCG
 on `verbatim`, −0.05 on `hard`. This is not a bug, it is the correct result: the

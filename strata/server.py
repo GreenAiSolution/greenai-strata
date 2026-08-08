@@ -76,8 +76,8 @@ padding:1px 8px;margin:2px 3px 0 0}
   <div class="controls">
     <label>mode
       <select id="mode">
+        <option value="rrf" selected>rrf</option>
         <option value="hybrid">hybrid (weighted)</option>
-        <option value="rrf">rrf</option>
         <option value="bm25">bm25 only</option>
         <option value="vector">vectors only</option>
       </select></label>
@@ -189,7 +189,7 @@ def serve(index_dir: str, host: str = "127.0.0.1", port: int = 8105) -> None:
                     hits, trace = engine.search(
                         query,
                         k=int((params.get("k") or ["10"])[0]),
-                        mode=(params.get("mode") or ["hybrid"])[0],
+                        mode=(params.get("mode") or ["rrf"])[0],
                         alpha=float((params.get("alpha") or ["0.35"])[0]),
                         reranker=rerankers.get(name),
                     )

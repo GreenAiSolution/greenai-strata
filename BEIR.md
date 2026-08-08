@@ -194,7 +194,11 @@ best mode. Pure dense wins on three datasets and RRF on two. RRF is the
 interesting one: it needs no α at all, and it is within 0.001 of the best mode
 on nfcorpus and scifact while being far more robust than a guessed weight. On
 the evidence here **RRF is the better default than weighted fusion at α = 0.5**,
-and that is a change worth making to the product rather than to the write-up.
+and that change has now been made to the product rather than only to the
+write-up: `SearchEngine.search`, the CLI and the web UI all default to
+`mode="rrf"`. Weighted fusion is unchanged and one flag away
+(`--mode hybrid --alpha …`) for corpora where an α tuned on held-out queries —
+not on these — earns its keep.
 
 Note what did *not* happen: I did not quietly adopt the oracle α. It is tuned on
 test labels and stays labelled as such. The defensible move is switching the
@@ -281,7 +285,7 @@ it as a loss would overstate what was measured.
 documents, so the loader says the results are no longer comparable and removes
 queries left with nothing relevant.
 
-202 tests. `pytest tests/`.
+221 tests. `pytest tests/`.
 
 ### Three defects an adversarial audit found
 

@@ -488,6 +488,31 @@ def test_engine_falls_back_when_the_query_embeds_to_zero():
 
 
 # --------------------------------------------------------------------------- #
+# RRF is the shipped default fusion mode (measured: BEIR.md §3)
+# --------------------------------------------------------------------------- #
+
+def test_rrf_is_the_default_mode_everywhere():
+    """With bge-base-en-v1.5 the oracle alpha is 0.8–0.9 on all five BEIR
+    datasets, so the untuned alpha=0.5 hybrid is never the best mode, while
+    parameter-free RRF lands within 0.001 of the best mode on two datasets.
+    The default therefore changed from weighted fusion to RRF; this pins it
+    in the engine, the CLI and the web UI so it cannot silently regress.
+    """
+    import inspect
+
+    from strata import cli
+    from strata.pipeline import SearchEngine
+    from strata.server import PAGE
+
+    assert inspect.signature(SearchEngine.search).parameters["mode"].default == "rrf"
+    assert cli.build_parser().parse_args(["search", "q"]).mode == "rrf"
+    # Weighted fusion stays fully available; only the default moved.
+    assert cli.build_parser().parse_args(
+        ["search", "q", "--mode", "hybrid", "--alpha", "0.8"]).alpha == 0.8
+    assert 'value="rrf" selected' in PAGE
+
+
+# --------------------------------------------------------------------------- #
 # The ANN "not retrieved" sentinel must sort below real negative similarities
 # --------------------------------------------------------------------------- #
 

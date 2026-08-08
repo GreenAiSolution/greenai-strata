@@ -272,7 +272,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------- #
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="strata",
         description="Hybrid retrieval: BM25 + vectors + fusion + re-ranking, "
@@ -297,10 +297,16 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("search", help="query the index")
     p.add_argument("query")
     p.add_argument("-k", type=int, default=8)
-    p.add_argument("--mode", default="hybrid",
-                   choices=["bm25", "vector", "rrf", "hybrid"])
+    p.add_argument("--mode", default="rrf",
+                   choices=["bm25", "vector", "rrf", "hybrid"],
+                   help="fusion mode (default: rrf — parameter-free and, "
+                        "measured on BEIR with a real encoder, never worse "
+                        "than 0.001 off the best mode on two datasets while "
+                        "the untuned weighted hybrid is never best; "
+                        "see BEIR.md §3)")
     p.add_argument("--alpha", type=float, default=0.5,
-                   help="hybrid weight: 1.0 = pure vector, 0.0 = pure BM25")
+                   help="hybrid weight: 1.0 = pure vector, 0.0 = pure BM25 "
+                        "(applies to --mode hybrid)")
     p.add_argument("--candidates", type=int, default=60)
     p.add_argument("--rerank", default="none", choices=["none", "local", "claude"])
     p.add_argument("--rerank-depth", type=int, default=25)
@@ -359,8 +365,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8105)
     p.set_defaults(func=cmd_serve)
+    return parser
 
-    args = parser.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     return args.func(args)
 
 
